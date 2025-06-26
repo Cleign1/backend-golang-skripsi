@@ -2,11 +2,12 @@ FROM golang:1.20 AS builder
 
 WORKDIR /app
 
-RUN go clean -modcache && go mod tidy
-RUN go mod download
-
 COPY go.mod go.sum ./
-RUN go mod download
+
+# Clean and regenerate dependencies
+RUN go clean -modcache
+RUN go mod tidy
+RUN go mod download && go mod verify
 
 COPY src/ ./
 RUN go build -o main .
