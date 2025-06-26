@@ -1,18 +1,18 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:alpine AS builder
 
 WORKDIR /app
 
-# Copy go mod files first
-COPY go.mod go.sum ./
+# Copy go mod files
+COPY go.mod ./
 
-# Download dependencies
-RUN go mod download
+# Initialize and download dependencies (regenerate go.sum)
+RUN go mod tidy && go mod download
 
-# Copy source code from src directory
-COPY src/ .
+# Copy source code
+COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+RUN go build -o main .
 
 # Final stage
 FROM alpine:latest
