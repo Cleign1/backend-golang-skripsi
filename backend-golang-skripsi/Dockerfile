@@ -1,21 +1,31 @@
-FROM golang:1.20 AS builder
+FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
+# Copy go mod files first
 COPY go.mod go.sum ./
 
-# Clean and regenerate dependencies
-RUN go clean -modcache
-RUN go mod tidy
-RUN go mod download && go mod verify
+# Download dependencies
+RUN go mod download
 
-COPY src/ ./
-RUN go build -o main .
+# Copy source code from src directory
+COPY src/ .
 
-FROM gcr.io/distroless/base
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -o main .
 
-WORKDIR /app
+# Final stage
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates tzdata
+
+WORKDIR /root/
+
+# Copy the binary from builder stage
 COPY --from=builder /app/main .
+
+# Create directory for prediction results
+RUN mkdir -p prediction_results
 
 EXPOSE 8080
 
