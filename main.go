@@ -56,46 +56,60 @@ func (s *Server) updateStockHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[Updater] Received request to update stock for %d items.", len(sales))
-	tx, err := s.DB.Begin(context.Background())
+
+	// IMPROVEMENT: Use the request's context for database operations.
+	ctx := r.Context()
+
+	tx, err := s.DB.Begin(ctx)
 	if err != nil {
+		log.Printf("ERROR: Failed to begin transaction: %v", err)
 		http.Error(w, "Database operation failed.", http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback(context.Background())
-	_, err = tx.Exec(context.Background(), `
-		CREATE TEMP TABLE sales_update (
-			product_index INT NOT NULL,
-			quantity_sold INT NOT NULL
-		) ON COMMIT DROP;
-	`)
+	defer tx.Rollback(ctx) // Rollback is a no-op if the transaction is already committed.
+
+	_, err = tx.Exec(ctx, `
+        CREATE TEMP TABLE sales_update (
+            product_index INT NOT NULL,
+            quantity_sold INT NOT NULL
+        ) ON COMMIT DROP;
+    `)
 	if err != nil {
+		log.Printf("ERROR: Failed to create temp table: %v", err)
 		http.Error(w, "Database operation failed.", http.StatusInternalServerError)
 		return
 	}
+
 	rows := make([][]interface{}, len(sales))
 	for i, sale := range sales {
 		rows[i] = []interface{}{sale.Index, sale.QuantitySold}
 	}
-	_, err = tx.CopyFrom(context.Background(), pgx.Identifier{"sales_update"}, []string{"product_index", "quantity_sold"}, pgx.CopyFromRows(rows))
+
+	_, err = tx.CopyFrom(ctx, pgx.Identifier{"sales_update"}, []string{"product_index", "quantity_sold"}, pgx.CopyFromRows(rows))
 	if err != nil {
+		log.Printf("ERROR: Failed to copy data to temp table: %v", err)
 		http.Error(w, "Database operation failed.", http.StatusInternalServerError)
 		return
 	}
 	updateQuery := `
-		UPDATE public.amazon_dataset AS ad
-		SET stock = ad.stock - su.quantity_sold
-		FROM sales_update AS su
-		WHERE ad.index = su.product_index;
-	`
-	commandTag, err := tx.Exec(context.Background(), updateQuery)
+        UPDATE public.amazon_dataset AS ad
+        SET stock = ad.stock - su.quantity_sold
+        FROM sales_update AS su
+        WHERE ad.index = su.product_index;
+    `
+	commandTag, err := tx.Exec(ctx, updateQuery)
 	if err != nil {
+		log.Printf("ERROR: Failed to execute update query: %v", err)
 		http.Error(w, "Database operation failed.", http.StatusInternalServerError)
 		return
 	}
-	if err := tx.Commit(context.Background()); err != nil {
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("ERROR: Failed to commit transaction: %v", err)
 		http.Error(w, "Database operation failed.", http.StatusInternalServerError)
 		return
 	}
+
 	log.Printf("[Updater] Successfully updated %d rows.", commandTag.RowsAffected())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -122,12 +136,12 @@ type Product struct {
 
 // PredictionResult holds the final analysis for a single product.
 type PredictionResult struct {
-	ProductID           int     `json:"product_id"`
-	ProductName         string  `json:"product_name"`
-	CurrentStock        int     `json:"current_stock"`
-	AvgDailySales3Days  float64 `json:"average_daily_sales_last_3_days"`
+	ProductID          int     `json:"product_id"`
+	ProductName        string  `json:"product_name"`
+	CurrentStock       int     `json:"current_stock"`
+	AvgDailySales3Days float64 `json:"average_daily_sales_last_3_days"`
 	PredictedDemand3Day int     `json:"predicted_demand_next_3_days"`
-	IsSufficient        bool    `json:"is_stock_sufficient"`
+	IsSufficient       bool    `json:"is_stock_sufficient"`
 }
 
 // predictStockHandler now immediately accepts the task and starts it in the background.
@@ -156,12 +170,13 @@ func (s *Server) predictStockHandler(w http.ResponseWriter, r *http.Request) {
 		"task_id": req.TaskID,
 	})
 
-	// Launch the long-running task in a new Goroutine (background thread)
-	go s.runPredictionTask(req)
+	// Launch the long-running task in a new Goroutine
+	// IMPROVEMENT: Use a detached context for the background task.
+	go s.runPredictionTask(context.Background(), req)
 }
 
 // runPredictionTask contains the core logic for the prediction analysis.
-func (s *Server) runPredictionTask(req PredictionRequest) {
+func (s *Server) runPredictionTask(ctx context.Context, req PredictionRequest) {
 	log.Printf("[Predictor] Starting background task. Task ID: %s, Prediction Date: %s", req.TaskID, req.PredictionDate)
 	startTime := time.Now()
 
@@ -172,13 +187,14 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 	for {
 		log.Printf("[Predictor] Processing batch for Task ID %s, starting at offset %d...", req.TaskID, offset)
 
-		products, err := s.fetchProductBatch(offset)
+		products, err := s.fetchProductBatch(ctx, offset)
 		if err != nil {
 			log.Printf("[Predictor] ERROR for Task ID %s: Failed to fetch product batch: %v", req.TaskID, err)
+			// Optional: send a failure callback here
 			return
 		}
 		if len(products) == 0 {
-			break
+			break // All products processed
 		}
 		productMap := make(map[int]Product)
 		productIDs := make([]int, len(products))
@@ -186,7 +202,7 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 			productMap[p.Index] = p
 			productIDs[i] = p.Index
 		}
-		salesData, err := s.fetchSalesDataForProducts(productIDs, req.PredictionDate)
+		salesData, err := s.fetchSalesDataForProducts(ctx, productIDs, req.PredictionDate)
 		if err != nil {
 			log.Printf("[Predictor] ERROR for Task ID %s: Failed to fetch sales data: %v", req.TaskID, err)
 			return
@@ -238,7 +254,7 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 	// --- 3. Upload Results to Google Drive ---
 	var driveURL string
 	if s.DriveService != nil && s.DriveFolderID != "" {
-		fileID, err := s.uploadToGoogleDrive(filePath, fileName)
+		fileID, err := s.uploadToGoogleDrive(ctx, filePath, fileName)
 		if err != nil {
 			log.Printf("[Predictor] WARNING for Task ID %s: Failed to upload results to Google Drive: %v", req.TaskID, err)
 			// Continue without failing the entire process
@@ -255,8 +271,8 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 		"task_id":                 req.TaskID,
 		"status":                  "Done",
 		"products_flagged":        len(insufficientStockProducts),
-		"file_location":           filePath,
-		"drive_url":               driveURL,
+		"file_location":           filePath, // Local file path
+		"drive_url":               driveURL, // Public Google Drive URL
 		"insufficient_stock_list": insufficientStockProducts,
 		"last_message":            "Prediksi Selesai, Silahkan cek Summary",
 	}
@@ -267,7 +283,7 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 		return
 	}
 
-	postReq, err := http.NewRequest("POST", s.CallbackURL, bytes.NewBuffer(jsonData))
+	postReq, err := http.NewRequestWithContext(ctx, "POST", s.CallbackURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		log.Printf("[Predictor] ERROR for Task ID %s: Failed to create callback request: %v", req.TaskID, err)
 		return
@@ -285,73 +301,75 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 	log.Printf("[Predictor] Callback sent for Task ID %s. Response from Flask app: %s", req.TaskID, resp.Status)
 }
 
-// testGoogleDriveConnection tests if we can connect to Google Drive
-func (s *Server) testGoogleDriveConnection() error {
+// testGoogleDriveConnection tests if we can connect to Google Drive and access the folder.
+func (s *Server) testGoogleDriveConnection(ctx context.Context) error {
 	if s.DriveService == nil {
-		return fmt.Errorf("Google Drive service not configured")
+		return fmt.Errorf("Google Drive service not initialized")
 	}
 
 	// Test by getting information about the folder
-	if s.DriveFolderID != "" {
-		_, err := s.DriveService.Files.Get(s.DriveFolderID).Do()
-		if err != nil {
-			return fmt.Errorf("failed to access Google Drive folder %s: %w", s.DriveFolderID, err)
-		}
+	if s.DriveFolderID == "" {
+		log.Println("WARNING: GOOGLE_DRIVE_FOLDER_ID not set. Files will be uploaded to root 'My Drive' folder.")
+		return nil
 	}
 
+	_, err := s.DriveService.Files.Get(s.DriveFolderID).Fields("id", "name").Do()
+	if err != nil {
+		return fmt.Errorf("failed to access Google Drive folder %s. Please ensure the folder ID is correct and you have shared the folder with the service account email: %w", s.DriveFolderID, err)
+	}
+
+	log.Printf("Successfully verified access to Google Drive folder: %s", s.DriveFolderID)
 	return nil
 }
 
-// uploadToGoogleDrive uploads a file to Google Drive folder
-func (s *Server) uploadToGoogleDrive(filePath, fileName string) (string, error) {
+// uploadToGoogleDrive uploads a file to the configured Google Drive folder.
+func (s *Server) uploadToGoogleDrive(ctx context.Context, filePath, fileName string) (string, error) {
 	if s.DriveService == nil {
 		return "", fmt.Errorf("Google Drive service not configured")
 	}
 
-	// Read the file
 	file, err := os.Open(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
+		return "", fmt.Errorf("failed to open file '%s': %w", filePath, err)
 	}
 	defer file.Close()
 
 	// Create file metadata
 	fileMetadata := &drive.File{
-		Name: fileName,
+		Name:    fileName,
+		Parents: []string{s.DriveFolderID}, // Specify the folder
 	}
 
-	// If folder ID is specified, set it as parent
-	if s.DriveFolderID != "" {
-		fileMetadata.Parents = []string{s.DriveFolderID}
-	}
-
-	// Upload the file
-	driveFile, err := s.DriveService.Files.Create(fileMetadata).Media(file).Do()
+	driveFile, err := s.DriveService.Files.Create(fileMetadata).Media(file).Context(ctx).Do()
 	if err != nil {
-		return "", fmt.Errorf("failed to upload file to Google Drive: %w", err)
+		return "", fmt.Errorf("failed to create file in Google Drive: %w", err)
 	}
 
-	// Make the file publicly readable (optional)
+	// Make the file publicly readable
 	permission := &drive.Permission{
 		Type: "anyone",
 		Role: "reader",
 	}
-	_, err = s.DriveService.Permissions.Create(driveFile.Id, permission).Do()
+	// We use a new background context here because we want this permission change to succeed
+	// even if the original request that triggered this upload has been cancelled.
+	_, err = s.DriveService.Permissions.Create(driveFile.Id, permission).Context(context.Background()).Do()
 	if err != nil {
-		log.Printf("Warning: Failed to make file public: %v", err)
+		// This is not a fatal error, the file is uploaded but just not public.
+		log.Printf("Warning: Failed to make file '%s' public: %v", driveFile.Id, err)
 	}
 
 	return driveFile.Id, nil
 }
 
-// fetchProductBatch and fetchSalesDataForProducts remain unchanged
-func (s *Server) fetchProductBatch(offset int) ([]Product, error) {
+// fetchProductBatch fetches a batch of products from the database.
+func (s *Server) fetchProductBatch(ctx context.Context, offset int) ([]Product, error) {
 	query := `SELECT "index", "name", "stock" FROM public.amazon_dataset ORDER BY "index" LIMIT $1 OFFSET $2;`
-	rows, err := s.DB.Query(context.Background(), query, s.BatchSize, offset)
+	rows, err := s.DB.Query(ctx, query, s.BatchSize, offset)
 	if err != nil {
 		return nil, fmt.Errorf("database query failed: %w", err)
 	}
 	defer rows.Close()
+
 	var products []Product
 	for rows.Next() {
 		var p Product
@@ -360,31 +378,41 @@ func (s *Server) fetchProductBatch(offset int) ([]Product, error) {
 		}
 		products = append(products, p)
 	}
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("error iterating over product rows: %w", rows.Err())
+	}
 	return products, nil
 }
-func (s *Server) fetchSalesDataForProducts(productIDs []int, predictionDate string) (map[int][]int, error) {
+
+// fetchSalesDataForProducts fetches recent sales data for a given list of product IDs.
+func (s *Server) fetchSalesDataForProducts(ctx context.Context, productIDs []int, predictionDate string) (map[int][]int, error) {
 	query := `
-		SELECT "index", "quantity_sold"
-		FROM public.daily_sales
-		WHERE "index" = ANY($1) 
-		  AND "date" >= (CAST($2 AS DATE) - interval '3 days')
-		  AND "date" < CAST($2 AS DATE);
-	`
-	rows, err := s.DB.Query(context.Background(), query, productIDs, predictionDate)
+        SELECT "index", "quantity_sold"
+        FROM public.daily_sales
+        WHERE "index" = ANY($1) 
+          AND "date" >= (CAST($2 AS DATE) - interval '3 days')
+          AND "date" < CAST($2 AS DATE);
+    `
+	rows, err := s.DB.Query(ctx, query, productIDs, predictionDate)
 	if err != nil {
 		return nil, fmt.Errorf("database query for sales failed: %w", err)
 	}
 	defer rows.Close()
+
 	salesByProduct := make(map[int][]int)
 	for _, id := range productIDs {
-		salesByProduct[id] = []int{}
+		salesByProduct[id] = []int{} // Pre-populate to handle products with no sales
 	}
+
 	for rows.Next() {
 		var productID, quantitySold int
 		if err := rows.Scan(&productID, &quantitySold); err != nil {
 			return nil, fmt.Errorf("failed to scan sales row: %w", err)
 		}
 		salesByProduct[productID] = append(salesByProduct[productID], quantitySold)
+	}
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("error iterating over sales rows: %w", rows.Err())
 	}
 	return salesByProduct, nil
 }
@@ -411,9 +439,12 @@ func main() {
 	if batchSizeStr == "" {
 		batchSizeStr = "500"
 	}
-	batchSize, _ := strconv.Atoi(batchSizeStr)
+	// FIX: Properly handle the error from Atoi
+	batchSize, err := strconv.Atoi(batchSizeStr)
+	if err != nil {
+		log.Fatalf("FATAL: Invalid BATCH_SIZE '%s'. Must be an integer.", batchSizeStr)
+	}
 
-	// Get the callback URL from the environment file.
 	callbackURL := os.Getenv("CALLBACK_URL")
 	if callbackURL == "" {
 		log.Fatal("FATAL: CALLBACK_URL environment variable is not set.")
@@ -426,37 +457,21 @@ func main() {
 
 	if credentialsPath != "" {
 		ctx := context.Background()
-
-		// Read the credentials file
 		credentialsData, err := os.ReadFile(credentialsPath)
 		if err != nil {
-			log.Printf("WARNING: Failed to read Google credentials file: %v. Google Drive upload will be disabled.", err)
+			log.Printf("WARNING: Failed to read Google credentials file at '%s': %v. Google Drive upload will be disabled.", credentialsPath, err)
 		} else {
-			// Create Drive service
-			driveService, err = drive.NewService(ctx, option.WithCredentialsJSON(credentialsData), option.WithScopes(drive.DriveFileScope))
+			// FIX: Use drive.DriveScope for broader permissions
+			driveService, err = drive.NewService(ctx, option.WithCredentialsJSON(credentialsData), option.WithScopes(drive.DriveScope))
 			if err != nil {
 				log.Printf("WARNING: Failed to create Google Drive service: %v. Google Drive upload will be disabled.", err)
-				driveService = nil
+				driveService = nil // Ensure it's nil on failure
 			} else {
-				log.Printf("Successfully initialized Google Drive service")
-
-				// Test the connection
-				if driveFolderID != "" {
-					if err := func() error {
-						_, err := driveService.Files.Get(driveFolderID).Do()
-						return err
-					}(); err != nil {
-						log.Printf("WARNING: Cannot access Google Drive folder '%s': %v. Please check folder ID and permissions.", driveFolderID, err)
-					} else {
-						log.Printf("Successfully verified access to Google Drive folder: %s", driveFolderID)
-					}
-				} else {
-					log.Println("GOOGLE_DRIVE_FOLDER_ID not set. Files will be uploaded to root folder.")
-				}
+				log.Println("Successfully initialized Google Drive service.")
 			}
 		}
 	} else {
-		log.Println("GOOGLE_CREDENTIALS_PATH not set. Google Drive upload will be disabled.")
+		log.Println("WARNING: GOOGLE_CREDENTIALS_PATH not set. Google Drive upload will be disabled.")
 	}
 
 	server := &Server{
@@ -466,6 +481,14 @@ func main() {
 		CallbackURL:   callbackURL,
 		DriveService:  driveService,
 		DriveFolderID: driveFolderID,
+	}
+
+	// IMPROVEMENT: Test Drive connection on startup
+	if server.DriveService != nil {
+		if err := server.testGoogleDriveConnection(context.Background()); err != nil {
+			// Log as a fatal error because the user expects uploads to work.
+			log.Fatalf("FATAL: Google Drive connection test failed: %v", err)
+		}
 	}
 
 	mux := http.NewServeMux()
