@@ -11,11 +11,12 @@ import (
 	"strconv"
 	"time"
 
-	"cloud.google.com/go/storage"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	jsoniter "github.com/json-iterator/go"
+	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/option"
 )
 
 // --- SHARED SERVER STRUCTURE ---
@@ -26,8 +27,8 @@ type Server struct {
 	Json          jsoniter.API
 	BatchSize     int
 	CallbackURL   string
-	GCPBucketName string
-	StorageClient *storage.Client
+	DriveService  *drive.Service
+	DriveFolderID string
 }
 
 // --- AGENT 1: STOCK UPDATER ---
@@ -234,19 +235,19 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 	}
 	log.Printf("[Predictor] Results for Task ID %s saved to %s", req.TaskID, filePath)
 
-	// --- 3. Upload Results to GCP Bucket ---
-	var gcsURL string
-	if s.StorageClient != nil && s.GCPBucketName != "" {
-		uploadedURL, err := s.uploadToGCPBucket(filePath, fileName)
+	// --- 3. Upload Results to Google Drive ---
+	var driveURL string
+	if s.DriveService != nil && s.DriveFolderID != "" {
+		fileID, err := s.uploadToGoogleDrive(filePath, fileName)
 		if err != nil {
-			log.Printf("[Predictor] WARNING for Task ID %s: Failed to upload results to GCP Bucket: %v", req.TaskID, err)
+			log.Printf("[Predictor] WARNING for Task ID %s: Failed to upload results to Google Drive: %v", req.TaskID, err)
 			// Continue without failing the entire process
 		} else {
-			gcsURL = uploadedURL
-			log.Printf("[Predictor] Results for Task ID %s uploaded to GCP Bucket: %s", req.TaskID, gcsURL)
+			driveURL = fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
+			log.Printf("[Predictor] Results for Task ID %s uploaded to Google Drive: %s", req.TaskID, driveURL)
 		}
 	} else {
-		log.Printf("[Predictor] WARNING for Task ID %s: GCP bucket upload skipped - not configured", req.TaskID)
+		log.Printf("[Predictor] WARNING for Task ID %s: Google Drive upload skipped - not configured", req.TaskID)
 	}
 
 	// --- 4. Send POST request back to Flask App ---
@@ -255,7 +256,7 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 		"status":                  "Done",
 		"products_flagged":        len(insufficientStockProducts),
 		"file_location":           filePath,
-		"gcs_url":                 gcsURL,
+		"drive_url":               driveURL,
 		"insufficient_stock_list": insufficientStockProducts,
 		"last_message":            "Prediksi Selesai, Silahkan cek Summary",
 	}
@@ -284,63 +285,63 @@ func (s *Server) runPredictionTask(req PredictionRequest) {
 	log.Printf("[Predictor] Callback sent for Task ID %s. Response from Flask app: %s", req.TaskID, resp.Status)
 }
 
-// testGCPConnection tests if we can connect to the GCP bucket
-func (s *Server) testGCPConnection() error {
-	if s.StorageClient == nil || s.GCPBucketName == "" {
-		return fmt.Errorf("GCP storage not configured")
+// testGoogleDriveConnection tests if we can connect to Google Drive
+func (s *Server) testGoogleDriveConnection() error {
+	if s.DriveService == nil {
+		return fmt.Errorf("Google Drive service not configured")
 	}
 
-	ctx := context.Background()
-
-	// Try to get bucket attributes to test connection
-	bucket := s.StorageClient.Bucket(s.GCPBucketName)
-	_, err := bucket.Attrs(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to access bucket %s: %w", s.GCPBucketName, err)
+	// Test by getting information about the folder
+	if s.DriveFolderID != "" {
+		_, err := s.DriveService.Files.Get(s.DriveFolderID).Do()
+		if err != nil {
+			return fmt.Errorf("failed to access Google Drive folder %s: %w", s.DriveFolderID, err)
+		}
 	}
 
 	return nil
 }
 
-// uploadToGCPBucket uploads a file to Google Cloud Storage bucket in the "storage" folder
-func (s *Server) uploadToGCPBucket(filePath, fileName string) (string, error) {
-	if s.StorageClient == nil || s.GCPBucketName == "" {
-		return "", fmt.Errorf("GCP storage not configured")
+// uploadToGoogleDrive uploads a file to Google Drive folder
+func (s *Server) uploadToGoogleDrive(filePath, fileName string) (string, error) {
+	if s.DriveService == nil {
+		return "", fmt.Errorf("Google Drive service not configured")
 	}
-
-	ctx := context.Background()
 
 	// Read the file
-	fileData, err := os.ReadFile(filePath)
+	file, err := os.Open(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
+		return "", fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Create file metadata
+	fileMetadata := &drive.File{
+		Name: fileName,
 	}
 
-	// Create a bucket handle
-	bucket := s.StorageClient.Bucket(s.GCPBucketName)
-
-	// Create object handle with the filename inside "storage" folder
-	objectPath := fmt.Sprintf("storage/%s", fileName)
-	obj := bucket.Object(objectPath)
-
-	// Create a writer
-	writer := obj.NewWriter(ctx)
-	writer.ContentType = "application/json"
-
-	// Write the file data
-	if _, err := writer.Write(fileData); err != nil {
-		writer.Close()
-		return "", fmt.Errorf("failed to write to GCP bucket: %w", err)
+	// If folder ID is specified, set it as parent
+	if s.DriveFolderID != "" {
+		fileMetadata.Parents = []string{s.DriveFolderID}
 	}
 
-	// Close the writer
-	if err := writer.Close(); err != nil {
-		return "", fmt.Errorf("failed to close GCP writer: %w", err)
+	// Upload the file
+	driveFile, err := s.DriveService.Files.Create(fileMetadata).Media(file).Do()
+	if err != nil {
+		return "", fmt.Errorf("failed to upload file to Google Drive: %w", err)
 	}
 
-	// Return the GCS URL with the storage folder path
-	gcsURL := fmt.Sprintf("gs://%s/storage/%s", s.GCPBucketName, fileName)
-	return gcsURL, nil
+	// Make the file publicly readable (optional)
+	permission := &drive.Permission{
+		Type: "anyone",
+		Role: "reader",
+	}
+	_, err = s.DriveService.Permissions.Create(driveFile.Id, permission).Do()
+	if err != nil {
+		log.Printf("Warning: Failed to make file public: %v", err)
+	}
+
+	return driveFile.Id, nil
 }
 
 // fetchProductBatch and fetchSalesDataForProducts remain unchanged
@@ -418,32 +419,44 @@ func main() {
 		log.Fatal("FATAL: CALLBACK_URL environment variable is not set.")
 	}
 
-	// Initialize GCP Storage client (optional)
-	var storageClient *storage.Client
-	gcpBucketName := os.Getenv("GCP_BUCKET_NAME")
-	if gcpBucketName != "" {
-		ctx := context.Background()
-		storageClient, err = storage.NewClient(ctx)
-		if err != nil {
-			log.Printf("WARNING: Failed to create GCP Storage client: %v. GCP upload will be disabled.", err)
-			storageClient = nil
-		} else {
-			log.Printf("Successfully initialized GCP Storage client for bucket: %s", gcpBucketName)
+	// Initialize Google Drive service (optional)
+	var driveService *drive.Service
+	driveFolderID := os.Getenv("GOOGLE_DRIVE_FOLDER_ID")
+	credentialsPath := os.Getenv("GOOGLE_CREDENTIALS_PATH")
 
-			// Test the connection to the bucket
-			if err := func() error {
-				ctx := context.Background()
-				bucket := storageClient.Bucket(gcpBucketName)
-				_, err := bucket.Attrs(ctx)
-				return err
-			}(); err != nil {
-				log.Printf("WARNING: Cannot access GCP bucket '%s': %v. Please check bucket name and permissions.", gcpBucketName, err)
+	if credentialsPath != "" {
+		ctx := context.Background()
+
+		// Read the credentials file
+		credentialsData, err := os.ReadFile(credentialsPath)
+		if err != nil {
+			log.Printf("WARNING: Failed to read Google credentials file: %v. Google Drive upload will be disabled.", err)
+		} else {
+			// Create Drive service
+			driveService, err = drive.NewService(ctx, option.WithCredentialsJSON(credentialsData), option.WithScopes(drive.DriveFileScope))
+			if err != nil {
+				log.Printf("WARNING: Failed to create Google Drive service: %v. Google Drive upload will be disabled.", err)
+				driveService = nil
 			} else {
-				log.Printf("Successfully verified access to GCP bucket: %s", gcpBucketName)
+				log.Printf("Successfully initialized Google Drive service")
+
+				// Test the connection
+				if driveFolderID != "" {
+					if err := func() error {
+						_, err := driveService.Files.Get(driveFolderID).Do()
+						return err
+					}(); err != nil {
+						log.Printf("WARNING: Cannot access Google Drive folder '%s': %v. Please check folder ID and permissions.", driveFolderID, err)
+					} else {
+						log.Printf("Successfully verified access to Google Drive folder: %s", driveFolderID)
+					}
+				} else {
+					log.Println("GOOGLE_DRIVE_FOLDER_ID not set. Files will be uploaded to root folder.")
+				}
 			}
 		}
 	} else {
-		log.Println("GCP_BUCKET_NAME not set. GCP upload will be disabled.")
+		log.Println("GOOGLE_CREDENTIALS_PATH not set. Google Drive upload will be disabled.")
 	}
 
 	server := &Server{
@@ -451,13 +464,8 @@ func main() {
 		Json:          jsoniter.ConfigCompatibleWithStandardLibrary,
 		BatchSize:     batchSize,
 		CallbackURL:   callbackURL,
-		GCPBucketName: gcpBucketName,
-		StorageClient: storageClient,
-	}
-
-	// Ensure storage client is closed when the application exits
-	if storageClient != nil {
-		defer storageClient.Close()
+		DriveService:  driveService,
+		DriveFolderID: driveFolderID,
 	}
 
 	mux := http.NewServeMux()
