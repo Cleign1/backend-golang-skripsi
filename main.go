@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"net/http"
@@ -136,12 +137,12 @@ type Product struct {
 
 // PredictionResult holds the final analysis for a single product.
 type PredictionResult struct {
-	ProductID          int     `json:"product_id"`
-	ProductName        string  `json:"product_name"`
-	CurrentStock       int     `json:"current_stock"`
-	AvgDailySales3Days float64 `json:"average_daily_sales_last_3_days"`
+	ProductID           int     `json:"product_id"`
+	ProductName         string  `json:"product_name"`
+	CurrentStock        int     `json:"current_stock"`
+	AvgDailySales3Days  float64 `json:"average_daily_sales_last_3_days"`
 	PredictedDemand3Day int     `json:"predicted_demand_next_3_days"`
-	IsSufficient       bool    `json:"is_stock_sufficient"`
+	IsSufficient        bool    `json:"is_stock_sufficient"`
 }
 
 // predictStockHandler now immediately accepts the task and starts it in the background.
@@ -175,6 +176,7 @@ func (s *Server) predictStockHandler(w http.ResponseWriter, r *http.Request) {
 	go s.runPredictionTask(context.Background(), req)
 }
 
+// runPredictionTask contains the core logic for the prediction analysis.
 // runPredictionTask contains the core logic for the prediction analysis.
 func (s *Server) runPredictionTask(ctx context.Context, req PredictionRequest) {
 	log.Printf("[Predictor] Starting background task. Task ID: %s, Prediction Date: %s", req.TaskID, req.PredictionDate)
@@ -229,26 +231,57 @@ func (s *Server) runPredictionTask(ctx context.Context, req PredictionRequest) {
 	duration := time.Since(startTime)
 	log.Printf("[Predictor] Analysis for Task ID %s completed in %v. Found %d products with insufficient stock.", req.TaskID, duration, len(insufficientStockProducts))
 
-	// --- 2. Save Results to File ---
+	// --- 2. Save Results to CSV File ---
 	resultsDir := "./prediction_results"
 	if err := os.MkdirAll(resultsDir, 0755); err != nil {
 		log.Printf("[Predictor] ERROR for Task ID %s: Could not create results directory: %v", req.TaskID, err)
 		return
 	}
 
-	fileName := fmt.Sprintf("prediction_result_%s.json", req.TaskID)
+	fileName := fmt.Sprintf("prediction_result_%s.csv", req.TaskID)
 	filePath := filepath.Join(resultsDir, fileName)
 
-	fileData, err := s.Json.MarshalIndent(insufficientStockProducts, "", "  ")
+	// Create CSV file
+	file, err := os.Create(filePath)
 	if err != nil {
-		log.Printf("[Predictor] ERROR for Task ID %s: Could not marshal results to JSON: %v", req.TaskID, err)
+		log.Printf("[Predictor] ERROR for Task ID %s: Could not create CSV file: %v", req.TaskID, err)
+		return
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// Write CSV header
+	header := []string{
+		"Product ID",
+		"Product Name",
+		"Current Stock",
+		"Average Daily Sales (Last 3 Days)",
+		"Predicted Demand (Next 3 Days)",
+		"Is Stock Sufficient",
+	}
+	if err := writer.Write(header); err != nil {
+		log.Printf("[Predictor] ERROR for Task ID %s: Could not write CSV header: %v", req.TaskID, err)
 		return
 	}
 
-	if err := os.WriteFile(filePath, fileData, 0644); err != nil {
-		log.Printf("[Predictor] ERROR for Task ID %s: Could not write results file: %v", req.TaskID, err)
-		return
+	// Write CSV data
+	for _, result := range insufficientStockProducts {
+		record := []string{
+			strconv.Itoa(result.ProductID),
+			result.ProductName,
+			strconv.Itoa(result.CurrentStock),
+			fmt.Sprintf("%.2f", result.AvgDailySales3Days),
+			strconv.Itoa(result.PredictedDemand3Day),
+			strconv.FormatBool(result.IsSufficient),
+		}
+		if err := writer.Write(record); err != nil {
+			log.Printf("[Predictor] ERROR for Task ID %s: Could not write CSV record: %v", req.TaskID, err)
+			return
+		}
 	}
+
 	log.Printf("[Predictor] Results for Task ID %s saved to %s", req.TaskID, filePath)
 
 	// --- 3. Upload Results to Google Drive ---
