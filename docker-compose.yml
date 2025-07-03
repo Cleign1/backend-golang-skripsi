@@ -9,3 +9,22 @@ services:
       - ./.env
     volumes:
       - ./buat-maen2-aja-9223ad2c5ec3_private_key_n8n_skripsi.json:/root/buat-maen2-aja-9223ad2c5ec3_private_key_n8n_skripsi.json:ro
+    networks:
+      - backend
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6739:6739"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+
+volumes:
+  redis_data:
+    external: true
+
+networks:
+  backend:
+    external: true
