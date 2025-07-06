@@ -1,41 +1,17 @@
-version: '3.8'
-
 services:
   stock-management-ai:
     build: .
     ports:
       - "8080:8080"
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - BATCH_SIZE=${BATCH_SIZE:-500}
-      - PORT=8080
-      - CALLBACK_URL=${CALLBACK_URL}
-      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID}
-      - GOOGLE_CREDENTIALS_PATH=${GOOGLE_CREDENTIALS_PATH}
+    env_file:
+      - ./.env
     volumes:
       - ./prediction_results:/app/prediction_results
-      - ./credentials:/app/credentials:ro  # Mount credentials directory
+      - ./buat-maen2-aja-9223ad2c5ec3_private_key_n8n_skripsi.json:/app/credentials:ro  # Mount credentials directory
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-    depends_on:
-      - postgres
-
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-stock_management}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-
-volumes:
-  postgres_data:
+    
