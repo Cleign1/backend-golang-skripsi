@@ -1,0 +1,1 @@
+"""Stock Update Agent implementation."""
