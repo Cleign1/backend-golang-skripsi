@@ -2,3 +2,34 @@
 prediction_results/
 buat-maen2-aja-9223ad2c5ec3_private_key_n8n_skripsi.json
 *.exe
+
+# Binaries
+main
+backend-golang-skripsi
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Google credentials (except example)
+*.json
+!.env.example

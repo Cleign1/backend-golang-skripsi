@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/google/generative-ai-go/genai"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -30,6 +32,8 @@ type Server struct {
 	CallbackURL   string
 	DriveService  *drive.Service
 	DriveFolderID string
+	GeminiClient  *genai.Client
+	GeminiModel   string
 }
 
 // --- AGENT 1: STOCK UPDATER ---
@@ -112,11 +116,29 @@ func (s *Server) updateStockHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[Updater] Successfully updated %d rows.", commandTag.RowsAffected())
+
+	// --- AI-Enhanced Analysis ---
+	var aiInsights string
+	if s.GeminiClient != nil {
+		log.Printf("[Updater] Generating AI insights for stock update...")
+		insights, err := s.analyzeStockUpdateWithAI(ctx, sales)
+		if err != nil {
+			log.Printf("[Updater] WARNING: Failed to generate AI insights: %v", err)
+			aiInsights = "AI analysis unavailable"
+		} else {
+			aiInsights = insights
+			log.Printf("[Updater] AI insights generated successfully")
+		}
+	} else {
+		aiInsights = "AI analysis disabled - Gemini client not configured"
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	s.Json.NewEncoder(w).Encode(map[string]string{
-		"status":  "Process completed successfully",
-		"message": "Stok telah berhasil diperbarui.",
+	s.Json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":      "Process completed successfully",
+		"message":     "Stok telah berhasil diperbarui.",
+		"ai_insights": aiInsights,
 	})
 }
 
@@ -284,7 +306,57 @@ func (s *Server) runPredictionTask(ctx context.Context, req PredictionRequest) {
 
 	log.Printf("[Predictor] Results for Task ID %s saved to %s", req.TaskID, filePath)
 
-	// --- 3. Upload Results to Google Drive ---
+	// --- 3. AI-Enhanced Analysis ---
+	var aiAnalysis string
+	if s.GeminiClient != nil {
+		log.Printf("[Predictor] Generating AI analysis for Task ID %s...", req.TaskID)
+		
+		// Collect all products and sales data for AI analysis
+		allProducts := []Product{}
+		allSalesData := make(map[int][]float64)
+		
+		// Re-fetch data for AI analysis (using a smaller sample for efficiency)
+		offset = 0
+		sampleSize := 100 // Limit to first 100 products for AI analysis
+		
+		products, err := s.fetchProductBatch(ctx, offset)
+		if err == nil && len(products) > 0 {
+			if len(products) > sampleSize {
+				products = products[:sampleSize]
+			}
+			allProducts = products
+			
+			productIDs := make([]int, len(products))
+			for i, p := range products {
+				productIDs[i] = p.Index
+			}
+			
+			salesData, err := s.fetchSalesDataForProducts(ctx, productIDs, req.PredictionDate)
+			if err == nil {
+				// Convert []int to []float64 for AI analysis
+				for productID, sales := range salesData {
+					floatSales := make([]float64, len(sales))
+					for i, sale := range sales {
+						floatSales[i] = float64(sale)
+					}
+					allSalesData[productID] = floatSales
+				}
+			}
+		}
+		
+		analysis, err := s.analyzeStockPredictionWithAI(ctx, req.TaskID, allProducts, allSalesData)
+		if err != nil {
+			log.Printf("[Predictor] WARNING for Task ID %s: Failed to generate AI analysis: %v", req.TaskID, err)
+			aiAnalysis = "AI analysis unavailable: " + err.Error()
+		} else {
+			aiAnalysis = analysis
+			log.Printf("[Predictor] AI analysis generated successfully for Task ID %s", req.TaskID)
+		}
+	} else {
+		aiAnalysis = "AI analysis disabled - Gemini client not configured"
+	}
+
+	// --- 4. Upload Results to Google Drive ---
 	var driveURL string
 	if s.DriveService != nil && s.DriveFolderID != "" {
 		fileID, err := s.uploadToGoogleDrive(ctx, filePath, fileName)
@@ -299,7 +371,7 @@ func (s *Server) runPredictionTask(ctx context.Context, req PredictionRequest) {
 		log.Printf("[Predictor] WARNING for Task ID %s: Google Drive upload skipped - not configured", req.TaskID)
 	}
 
-	// --- 4. Send POST request back to Flask App ---
+	// --- 5. Send POST request back to Flask App ---
 	finalPayload := map[string]interface{}{
 		"task_id":                 req.TaskID,
 		"status":                  "Done",
@@ -307,7 +379,8 @@ func (s *Server) runPredictionTask(ctx context.Context, req PredictionRequest) {
 		"file_location":           filePath, // Local file path
 		"drive_url":               driveURL, // Public Google Drive URL
 		"insufficient_stock_list": insufficientStockProducts,
-		"last_message":            "Prediksi Selesai, Silahkan cek Summary",
+		"ai_analysis":             aiAnalysis, // AI-powered insights
+		"last_message":            "Prediksi Selesai dengan AI Analysis, Silahkan cek Summary",
 	}
 
 	jsonData, err := s.Json.Marshal(finalPayload)
@@ -392,6 +465,165 @@ func (s *Server) uploadToGoogleDrive(ctx context.Context, filePath, fileName str
 	}
 
 	return driveFile.Id, nil
+}
+
+// --- AI AGENT FUNCTIONS ---
+
+// analyzeStockPredictionWithAI uses Gemini to provide AI-enhanced stock prediction analysis
+func (s *Server) analyzeStockPredictionWithAI(ctx context.Context, taskID string, products []Product, salesData map[int][]float64) (string, error) {
+	if s.GeminiClient == nil {
+		return "", fmt.Errorf("Gemini client not initialized")
+	}
+
+	// Prepare data for AI analysis
+	var analysisData strings.Builder
+	analysisData.WriteString("Stock Prediction Analysis Request:\n\n")
+	analysisData.WriteString(fmt.Sprintf("Task ID: %s\n", taskID))
+	analysisData.WriteString(fmt.Sprintf("Total Products Analyzed: %d\n\n", len(products)))
+
+	// Add sample product data for analysis
+	analysisData.WriteString("Sample Product Data:\n")
+	sampleCount := 5
+	if len(products) < sampleCount {
+		sampleCount = len(products)
+	}
+
+	for i := 0; i < sampleCount; i++ {
+		product := products[i]
+		sales, exists := salesData[product.Index]
+		if exists && len(sales) > 0 {
+			avgSales := 0.0
+			for _, sale := range sales {
+				avgSales += sale
+			}
+			avgSales /= float64(len(sales))
+			
+			analysisData.WriteString(fmt.Sprintf("- Product: %s (ID: %d)\n", product.Name, product.Index))
+			analysisData.WriteString(fmt.Sprintf("  Current Stock: %d\n", product.CurrentStock))
+			analysisData.WriteString(fmt.Sprintf("  Avg Daily Sales (3 days): %.2f\n", avgSales))
+			analysisData.WriteString(fmt.Sprintf("  Sales History: %v\n\n", sales))
+		}
+	}
+
+	// Create the prompt for Gemini
+	prompt := fmt.Sprintf(`You are an expert inventory management AI assistant. Please analyze the following stock prediction data and provide insights:
+
+%s
+
+Please provide:
+1. Overall market trend analysis based on the sales patterns
+2. Risk assessment for potential stockouts
+3. Recommendations for inventory optimization
+4. Key insights that could improve prediction accuracy
+5. Suggested actions for the business
+
+Keep your response concise but informative, focusing on actionable insights.`, analysisData.String())
+
+	model := s.GeminiClient.GenerativeModel(s.GeminiModel)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return "", fmt.Errorf("failed to generate AI analysis: %w", err)
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("no content generated by AI")
+	}
+
+	// Extract the text response
+	var aiAnalysis strings.Builder
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if text, ok := part.(genai.Text); ok {
+			aiAnalysis.WriteString(string(text))
+		}
+	}
+
+	return aiAnalysis.String(), nil
+}
+
+// analyzeStockUpdateWithAI uses Gemini to provide insights on stock update patterns
+func (s *Server) analyzeStockUpdateWithAI(ctx context.Context, salesData []SaleData) (string, error) {
+	if s.GeminiClient == nil {
+		return "", fmt.Errorf("Gemini client not initialized")
+	}
+
+	// Prepare sales data for analysis
+	var analysisData strings.Builder
+	analysisData.WriteString("Stock Update Analysis Request:\n\n")
+	analysisData.WriteString(fmt.Sprintf("Total Sales Transactions: %d\n\n", len(salesData)))
+
+	totalQuantity := 0
+	productCounts := make(map[int]int)
+	for _, sale := range salesData {
+		totalQuantity += sale.QuantitySold
+		productCounts[sale.Index] += sale.QuantitySold
+	}
+
+	analysisData.WriteString(fmt.Sprintf("Total Quantity Sold: %d\n", totalQuantity))
+	analysisData.WriteString(fmt.Sprintf("Average per Transaction: %.2f\n\n", float64(totalQuantity)/float64(len(salesData))))
+
+	// Add top selling products
+	analysisData.WriteString("Top Selling Products in this Update:\n")
+	count := 0
+	for productID, quantity := range productCounts {
+		if count >= 5 { // Limit to top 5
+			break
+		}
+		analysisData.WriteString(fmt.Sprintf("- Product ID %d: %d units sold\n", productID, quantity))
+		count++
+	}
+
+	prompt := fmt.Sprintf(`You are an expert retail analytics AI assistant. Please analyze the following sales data:
+
+%s
+
+Please provide:
+1. Sales pattern analysis
+2. Potential insights about customer behavior
+3. Recommendations for inventory management
+4. Any anomalies or unusual patterns detected
+5. Suggested follow-up actions
+
+Keep your response concise and focused on actionable business insights.`, analysisData.String())
+
+	model := s.GeminiClient.GenerativeModel(s.GeminiModel)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return "", fmt.Errorf("failed to generate AI analysis: %w", err)
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("no content generated by AI")
+	}
+
+	// Extract the text response
+	var aiAnalysis strings.Builder
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if text, ok := part.(genai.Text); ok {
+			aiAnalysis.WriteString(string(text))
+		}
+	}
+
+	return aiAnalysis.String(), nil
+}
+
+// testGeminiConnection tests if we can connect to Gemini AI service
+func (s *Server) testGeminiConnection(ctx context.Context) error {
+	if s.GeminiClient == nil {
+		return fmt.Errorf("Gemini client not initialized")
+	}
+
+	model := s.GeminiClient.GenerativeModel(s.GeminiModel)
+	resp, err := model.GenerateContent(ctx, genai.Text("Hello, please respond with 'Gemini AI connected successfully' to test the connection."))
+	if err != nil {
+		return fmt.Errorf("failed to connect to Gemini AI: %w", err)
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return fmt.Errorf("received empty response from Gemini AI")
+	}
+
+	log.Println("Successfully connected to Gemini AI service")
+	return nil
 }
 
 // fetchProductBatch fetches a batch of products from the database.
@@ -507,6 +739,29 @@ func main() {
 		log.Println("WARNING: GOOGLE_CREDENTIALS_PATH not set. Google Drive upload will be disabled.")
 	}
 
+	// Initialize Google Gemini AI service (optional)
+	var geminiClient *genai.Client
+	geminiModel := os.Getenv("GEMINI_MODEL")
+	googleAPIKey := os.Getenv("GOOGLE_API_KEY")
+
+	if geminiModel == "" {
+		geminiModel = "gemini-2.5-flash" // Default model
+	}
+
+	if googleAPIKey != "" {
+		ctx := context.Background()
+		client, err := genai.NewClient(ctx, option.WithAPIKey(googleAPIKey))
+		if err != nil {
+			log.Printf("WARNING: Failed to create Gemini AI client: %v. AI analysis will be disabled.", err)
+			geminiClient = nil
+		} else {
+			geminiClient = client
+			log.Printf("Successfully initialized Gemini AI service with model: %s", geminiModel)
+		}
+	} else {
+		log.Println("WARNING: GOOGLE_API_KEY not set. AI analysis will be disabled.")
+	}
+
 	server := &Server{
 		DB:            dbpool,
 		Json:          jsoniter.ConfigCompatibleWithStandardLibrary,
@@ -514,6 +769,8 @@ func main() {
 		CallbackURL:   callbackURL,
 		DriveService:  driveService,
 		DriveFolderID: driveFolderID,
+		GeminiClient:  geminiClient,
+		GeminiModel:   geminiModel,
 	}
 
 	// IMPROVEMENT: Test Drive connection on startup
@@ -521,6 +778,14 @@ func main() {
 		if err := server.testGoogleDriveConnection(context.Background()); err != nil {
 			// Log as a fatal error because the user expects uploads to work.
 			log.Fatalf("FATAL: Google Drive connection test failed: %v", err)
+		}
+	}
+
+	// Test Gemini AI connection on startup (optional)
+	if server.GeminiClient != nil {
+		if err := server.testGeminiConnection(context.Background()); err != nil {
+			log.Printf("WARNING: Gemini AI connection test failed: %v. AI analysis will be disabled.", err)
+			server.GeminiClient = nil // Disable AI if connection fails
 		}
 	}
 
