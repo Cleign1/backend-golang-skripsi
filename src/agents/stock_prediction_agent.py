@@ -38,28 +38,37 @@ class StockPredictionAgent:
     Uses Google Gemini LLM to analyze sales patterns and predict future demand.
     """
     
-    def __init__(self, database_manager, google_api_key: str, 
-                 batch_size: int = 500, callback_url: str = "",
-                 credentials_path: str = "", drive_folder_id: str = ""):
+    def __init__(self, database_manager, google_api_key: str, batch_size: int = 500, 
+             callback_url: str = "", credentials_path: str = "", drive_folder_id: str = ""):
+        """Initialize the Stock Prediction Agent."""
         self.database_manager = database_manager
         self.batch_size = batch_size
         self.callback_url = callback_url
         
         # Initialize LLM
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-pro",
+            model="gemini-2.5-flash",
             google_api_key=google_api_key,
             temperature=0.1
         )
         
-        # Initialize tools
-        self.tools = {
-            "fetch_products": ProductBatchTool(database_manager),
-            "fetch_sales": SalesDataTool(database_manager),
-            "generate_csv": CSVGeneratorTool(),
-            "upload_to_drive": GoogleDriveUploadTool(credentials_path, drive_folder_id) if credentials_path else None,
-            "send_callback": CallbackNotificationTool()
-        }
+        # Initialize tools with keyword arguments
+        self.product_batch_tool = ProductBatchTool(database_manager=database_manager)
+        self.sales_data_tool = SalesDataTool(database_manager=database_manager)
+        self.csv_generator_tool = CSVGeneratorTool()
+        
+        if credentials_path and drive_folder_id:
+            self.drive_upload_tool = GoogleDriveUploadTool(
+                credentials_path=credentials_path,
+                folder_id=drive_folder_id
+            )
+        else:
+            self.drive_upload_tool = None
+        
+        if callback_url:
+            self.callback_tool = CallbackNotificationTool()
+        else:
+            self.callback_tool = None
         
         # Create the workflow graph
         self.workflow = self._create_workflow()
@@ -72,7 +81,7 @@ class StockPredictionAgent:
             try:
                 logger.info(f"[Task {state['task_id']}] Fetching products at offset {state['offset']}")
                 
-                result = self.tools["fetch_products"]._run(state["offset"], state["batch_size"])
+                result = self.product_batch_tool._run(state["offset"], state["batch_size"])
                 products = json.loads(result) if isinstance(result, str) and result.startswith('[') else []
                 
                 state["current_batch"] = products
@@ -101,7 +110,7 @@ class StockPredictionAgent:
                 product_ids = [p["index"] for p in state["current_batch"]]
                 
                 # Fetch sales data
-                sales_result = self.tools["fetch_sales"]._run(product_ids, state["prediction_date"])
+                sales_result = self.sales_data_tool._run(product_ids, state["prediction_date"])
                 sales_data = json.loads(sales_result) if isinstance(sales_result, str) and sales_result.startswith('{') else {}
                 
                 # Use AI to analyze each product
@@ -177,7 +186,7 @@ class StockPredictionAgent:
             try:
                 logger.info(f"[Task {state['task_id']}] Generating CSV report with {len(state['insufficient_stock_products'])} products")
                 
-                csv_path = self.tools["generate_csv"]._run(
+                csv_path = self.csv_generator_tool._run(
                     state["insufficient_stock_products"],
                     state["task_id"]
                 )
@@ -198,14 +207,14 @@ class StockPredictionAgent:
         def upload_to_drive(state: PredictionState) -> PredictionState:
             """Upload the CSV report to Google Drive."""
             try:
-                if not state.get("csv_file_path") or not self.tools["upload_to_drive"]:
+                if not state.get("csv_file_path") or not self.drive_upload_tool:
                     logger.info(f"[Task {state['task_id']}] Skipping Google Drive upload")
                     return state
                 
                 logger.info(f"[Task {state['task_id']}] Uploading to Google Drive")
                 
                 filename = f"prediction_result_{state['task_id']}.csv"
-                drive_url = self.tools["upload_to_drive"]._run(state["csv_file_path"], filename)
+                drive_url = self.drive_upload_tool._run(state["csv_file_path"], filename)
                 
                 if drive_url and not drive_url.startswith("Error"):
                     state["drive_url"] = drive_url
@@ -222,8 +231,8 @@ class StockPredictionAgent:
         def send_callback_notification(state: PredictionState) -> PredictionState:
             """Send completion callback to the Flask app."""
             try:
-                if not state.get("callback_url"):
-                    logger.info(f"[Task {state['task_id']}] No callback URL provided")
+                if not state.get("callback_url") or not self.callback_tool:
+                    logger.info(f"[Task {state['task_id']}] No callback URL provided or callback tool not available")
                     return state
                 
                 logger.info(f"[Task {state['task_id']}] Sending callback notification")
@@ -238,7 +247,7 @@ class StockPredictionAgent:
                     "last_message": "Prediksi Selesai, Silahkan cek Summary" if not state.get("error_message") else state["error_message"]
                 }
                 
-                callback_result = self.tools["send_callback"]._run(state["callback_url"], callback_payload)
+                callback_result = self.callback_tool._run(state["callback_url"], callback_payload)
                 logger.info(f"[Task {state['task_id']}] Callback result: {callback_result}")
                 
                 return state

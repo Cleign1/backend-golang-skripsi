@@ -17,15 +17,16 @@ class StockUpdateAgent:
     """
     
     def __init__(self, database_manager, google_api_key: str):
+        """Initialize the Stock Update Agent."""
         self.database_manager = database_manager
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-pro",
+            model="gemini-2.5-flash",
             google_api_key=google_api_key,
             temperature=0.1  # Low temperature for consistent, factual responses
         )
         
-        # Initialize tool
-        self.stock_update_tool = StockUpdateTool(database_manager)
+        # Initialize tool with keyword argument
+        self.stock_update_tool = StockUpdateTool(database_manager=database_manager)
         
     def process_stock_update(self, sales_data: List[SaleData]) -> StockUpdateResponse:
         """

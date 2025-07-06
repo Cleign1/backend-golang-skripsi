@@ -23,10 +23,10 @@ class StockUpdateTool(BaseTool):
     name: str = "stock_update"
     description: str = "Updates stock levels in the database based on sales data"
     args_schema: Type[BaseModel] = StockUpdateInput
+    database_manager: Any = Field(description="Database manager instance")
     
-    def __init__(self, database_manager):
-        super().__init__()
-        self.database_manager = database_manager
+    class Config:
+        arbitrary_types_allowed = True
     
     def _run(self, sales_data: List[Dict[str, Any]]) -> str:
         """Update stock levels."""
@@ -48,10 +48,10 @@ class ProductBatchTool(BaseTool):
     name: str = "fetch_product_batch"
     description: str = "Fetches a batch of products from the database"
     args_schema: Type[BaseModel] = ProductBatchInput
+    database_manager: Any = Field(description="Database manager instance")
     
-    def __init__(self, database_manager):
-        super().__init__()
-        self.database_manager = database_manager
+    class Config:
+        arbitrary_types_allowed = True
     
     def _run(self, offset: int, batch_size: int) -> str:
         """Fetch product batch."""
@@ -73,10 +73,10 @@ class SalesDataTool(BaseTool):
     name: str = "fetch_sales_data"
     description: str = "Fetches recent sales data for given product IDs"
     args_schema: Type[BaseModel] = SalesDataInput
+    database_manager: Any = Field(description="Database manager instance")
     
-    def __init__(self, database_manager):
-        super().__init__()
-        self.database_manager = database_manager
+    class Config:
+        arbitrary_types_allowed = True
     
     def _run(self, product_ids: List[int], prediction_date: str) -> str:
         """Fetch sales data."""
@@ -147,12 +147,19 @@ class GoogleDriveUploadTool(BaseTool):
     name: str = "upload_to_drive"
     description: str = "Uploads file to Google Drive"
     args_schema: Type[BaseModel] = GoogleDriveUploadInput
+    credentials_path: str = Field(description="Path to Google Drive credentials")
+    folder_id: Optional[str] = Field(default=None, description="Google Drive folder ID")
+    service: Any = Field(default=None, description="Google Drive service instance")
     
-    def __init__(self, credentials_path: str, folder_id: str = None):
-        super().__init__()
-        self.credentials_path = credentials_path
-        self.folder_id = folder_id
-        self.service = None
+    class Config:
+        arbitrary_types_allowed = True
+    
+    def __init__(self, credentials_path: str, folder_id: str = None, **kwargs):
+        super().__init__(
+            credentials_path=credentials_path, 
+            folder_id=folder_id, 
+            **kwargs
+        )
         self._initialize_service()
     
     def _initialize_service(self):
