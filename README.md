@@ -1,60 +1,256 @@
-# backend-golang-skripsi
+# Stock Management AI Agents
 
 ## Overview
-This project is a Go-based server application designed for managing stock updates and predictions. It provides two main endpoints: one for updating stock based on sales data and another for predicting future stock needs based on historical sales data.
+This project features intelligent AI agents built with **LangChain** and **LangGraph** using **Google Gemini LLM** for advanced stock management. The system provides two main AI-powered functionalities: intelligent stock updates and predictive stock analysis.
 
-## Project Structure
+## 🤖 AI Agents
+
+### 1. Stock Update Agent (LangChain)
+- **Technology**: LangChain with Google Gemini Pro
+- **Purpose**: Intelligently processes sales data and updates inventory levels
+- **Features**:
+  - AI-powered data validation and error detection
+  - Smart duplicate detection and data quality checks
+  - Intelligent error handling with detailed feedback
+  - Batch processing with transaction safety
+
+### 2. Stock Prediction Agent (LangGraph)
+- **Technology**: LangGraph workflow with Google Gemini Pro  
+- **Purpose**: Predicts future stock needs using advanced AI analysis
+- **Features**:
+  - AI-driven sales pattern analysis
+  - Intelligent batch processing with state management
+  - Automated report generation and file uploads
+  - Smart callback notifications
+  - Google Drive integration for report sharing
+
+## 🏗️ Architecture
+
 ```
-backend-golang-skripsi
-├── src
-│   └── main.go          # Entry point of the Go application
-├── Dockerfile           # Dockerfile for building the application image
-├── .dockerignore        # Files to ignore when building the Docker image
-├── go.mod               # Module dependencies
-├── go.sum               # Checksums for module dependencies
-├── .env.example         # Example environment variables
-└── README.md            # Project documentation
+├── main.py                    # FastAPI application entry point
+├── requirements.txt           # Python dependencies
+├── src/
+│   ├── agents/
+│   │   ├── stock_update_agent.py      # LangChain-based stock update agent
+│   │   └── stock_prediction_agent.py  # LangGraph-based prediction agent
+│   ├── tools/                 # AI agent tools and utilities
+│   ├── database/              # Database management utilities
+│   └── models/                # Pydantic data models
+├── .env.example              # Environment configuration template
+└── README.md                 # This file
 ```
 
-## Setup Instructions
+## 🚀 Setup Instructions
 
 ### Prerequisites
-- Go (version 1.16 or later)
-- Docker (for containerization)
-- PostgreSQL (for database)
+- Python 3.8 or later
+- PostgreSQL database
+- Google API key for Gemini LLM
+- (Optional) Google Drive service account for file uploads
 
-### Environment Variables
-Create a `.env` file in the root directory based on the `.env.example` file. Ensure to set the following variables:
-- `DATABASE_URL`: Connection string for the PostgreSQL database.
-- `BATCH_SIZE`: Number of products to process in each batch (default is 500).
-- `CALLBACK_URL`: URL for the callback after prediction is completed.
-- `PORT`: Port on which the server will run (default is 8080).
+### Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd backend-golang-skripsi
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Environment Configuration**:
+   Copy `.env.example` to `.env` and configure:
+   ```bash
+   cp .env.example .env
+   ```
+   
+   Update the following variables:
+   ```env
+   DATABASE_URL=postgresql://username:password@host:port/database_name
+   GOOGLE_API_KEY=your_google_gemini_api_key_here
+   BATCH_SIZE=500
+   PORT=8080
+   CALLBACK_URL=http://your-flask-app.com/callback
+   
+   # Optional Google Drive integration
+   GOOGLE_DRIVE_FOLDER_ID=your_google_drive_folder_id
+   GOOGLE_CREDENTIALS_PATH=path/to/service-account-key.json
+   ```
+
+4. **Database Setup**:
+   Ensure your PostgreSQL database has the required tables:
+   - `amazon_dataset` - Product catalog with stock levels
+   - `daily_sales` - Historical sales data
 
 ### Running the Application
 
-#### Locally
-1. Install dependencies:
-   ```
-   go mod tidy
-   ```
-2. Run the application:
-   ```
-   go run src/main.go
-   ```
+**Development Mode**:
+```bash
+python main.py
+```
 
-#### Using Docker
-1. Build the Docker image:
-   ```
-   docker build -t stock-management-app .
-   ```
-2. Run the Docker container:
-   ```
-   docker run -p 8080:8080 --env-file .env stock-management-app
-   ```
+**Production Mode**:
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8080
+```
 
-## Endpoints
-- **POST /update-stock**: Updates stock based on the provided sales data.
-- **POST /predict-stock**: Initiates a background task to predict stock needs based on historical sales data.
+The API will be available at `http://localhost:8080`
 
-## License
+## 📡 API Endpoints
+
+### Core Endpoints
+
+#### `POST /update-stock`
+Updates stock levels using the AI agent for intelligent processing.
+
+**Request Body**:
+```json
+[
+    {
+        "index": 1,
+        "quantity_sold": 5
+    },
+    {
+        "index": 2,
+        "quantity_sold": 3
+    }
+]
+```
+
+**Response**:
+```json
+{
+    "status": "Process completed successfully",
+    "message": "Stok telah berhasil diperbarui."
+}
+```
+
+#### `POST /predict-stock`
+Initiates AI-powered stock prediction analysis with LangGraph workflow.
+
+**Request Body**:
+```json
+{
+    "prediction_date": "2024-01-15",
+    "task_id": "task_123"
+}
+```
+
+**Response**:
+```json
+{
+    "status": "Prediction task accepted and is running in the background with AI workflow.",
+    "task_id": "task_123"
+}
+```
+
+### Utility Endpoints
+
+#### `GET /`
+API information and capabilities
+
+#### `GET /health`
+Health check for database and AI agents
+
+#### `GET /agents/status`
+Status of AI agents and their capabilities
+
+#### `POST /validate-sales-data`
+Validate sales data using AI without processing
+
+## 🧠 AI Capabilities
+
+### Stock Update Agent Intelligence
+- **Data Validation**: AI automatically detects missing fields, invalid data types, and business rule violations
+- **Smart Error Handling**: Provides intelligent, contextual error messages
+- **Duplicate Detection**: Identifies and handles duplicate entries intelligently
+- **Quality Assurance**: Ensures data integrity before database operations
+
+### Stock Prediction Agent Intelligence  
+- **Pattern Recognition**: AI analyzes historical sales patterns to identify trends
+- **Demand Forecasting**: Uses machine learning insights to predict future stock needs
+- **Risk Assessment**: Identifies products at risk of stockouts
+- **Automated Reporting**: Generates comprehensive analysis reports with actionable insights
+
+## 🔧 AI Agent Workflows
+
+### Stock Update Workflow
+1. **AI Validation**: Gemini LLM validates incoming sales data
+2. **Smart Processing**: AI determines optimal processing strategy
+3. **Database Update**: Secure transaction with rollback capability
+4. **Intelligent Feedback**: AI-generated status and recommendations
+
+### Stock Prediction Workflow (LangGraph)
+1. **Initialization**: Set up prediction parameters and state
+2. **Batch Processing**: AI-managed batch fetching with state tracking
+3. **AI Analysis**: Gemini LLM analyzes sales patterns for each batch
+4. **Pattern Recognition**: Identify trends and predict future demand
+5. **Report Generation**: Create comprehensive CSV reports
+6. **File Management**: Upload to Google Drive with public sharing
+7. **Notification**: Send intelligent callback with results summary
+
+## 🔒 Security & Best Practices
+
+- **Environment Variables**: All sensitive data stored in environment variables
+- **Database Transactions**: All updates use transactions with rollback capability
+- **API Validation**: Pydantic models ensure data integrity
+- **Error Handling**: Comprehensive error handling with logging
+- **Rate Limiting**: Built-in protection against abuse
+
+## 🌟 Key Features
+
+- **AI-Powered**: Google Gemini LLM provides intelligent decision making
+- **Workflow Automation**: LangGraph manages complex multi-step processes
+- **Real-time Processing**: FastAPI provides high-performance async operations
+- **Comprehensive Logging**: Detailed logs for monitoring and debugging
+- **Scalable Architecture**: Modular design supports easy extension
+- **Google Drive Integration**: Automated report sharing and storage
+- **Flexible Configuration**: Environment-based configuration management
+
+## 🚀 Advanced Usage
+
+### Custom AI Prompts
+The AI agents use sophisticated prompts for:
+- Data validation and quality assessment
+- Sales pattern analysis and trend detection
+- Risk assessment and recommendation generation
+- Error analysis and resolution suggestions
+
+### Workflow Customization
+The LangGraph prediction workflow can be extended with additional nodes for:
+- Custom business rules
+- Additional data sources
+- Advanced analytics
+- Custom notification systems
+
+## 📊 Monitoring & Analytics
+
+### Health Monitoring
+- Database connection status
+- AI agent initialization status
+- Real-time performance metrics
+
+### Logging
+- Detailed operation logs
+- AI decision tracking
+- Performance metrics
+- Error analysis
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Implement your changes
+4. Add tests and documentation
+5. Submit a pull request
+
+## 📄 License
+
 This project is licensed under the MIT License. See the LICENSE file for details.
+
+---
+
+**Powered by LangChain 🦜🔗 + LangGraph 🕸️ + Google Gemini 🤖**

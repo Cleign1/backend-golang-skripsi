@@ -1,32 +1,31 @@
-FROM golang:alpine AS builder
+FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
-# Copy go mod files
-COPY go.mod ./
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
 
-# Initialize and download dependencies (regenerate go.sum)
-RUN go mod tidy && go mod download
+# Copy requirements first for better caching
+COPY requirements.txt .
 
-# Copy source code
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
 COPY . .
-
-# Build the application
-RUN go build -o main .
-
-# Final stage
-FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates tzdata
-
-WORKDIR /root/
-
-# Copy the binary from builder stage
-COPY --from=builder /app/main .
 
 # Create directory for prediction results
 RUN mkdir -p prediction_results
 
+# Expose port
 EXPOSE 8080
 
-CMD ["./main"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8080/health')" || exit 1
+
+# Run the application
+CMD ["python", "main.py"]
