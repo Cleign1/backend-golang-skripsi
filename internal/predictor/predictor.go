@@ -182,7 +182,11 @@ func (p *Predictor) saveResultsToCSV(taskID string, results []models.PredictionR
 		return "", fmt.Errorf("could not create results directory: %w", err)
 	}
 
-	fileName := fmt.Sprintf("prediction_result_%s.csv", taskID)
+	currentTime := time.Now()
+	dateStr := currentTime.Format("20060102")
+	timeStr := currentTime.Format("150405")
+
+	fileName := fmt.Sprintf("prediction_result_prediksi_%s_%s.csv", dateStr, timeStr)
 	filePath := filepath.Join(resultsDir, fileName)
 
 	file, err := os.Create(filePath)
@@ -221,7 +225,7 @@ func (p *Predictor) saveResultsToCSV(taskID string, results []models.PredictionR
 func (p *Predictor) sendCallback(ctx context.Context, taskID, filePath, driveURL string, results []models.PredictionResult) error {
 	finalPayload := map[string]interface{}{
 		"task_id":                 taskID,
-		"status":                  "Done",
+		"status":                  "SUCCESS",
 		"products_flagged":        len(results),
 		"file_location":           filePath,
 		"drive_url":               driveURL,
