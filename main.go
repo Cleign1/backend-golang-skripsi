@@ -61,10 +61,11 @@ func main() {
 
 	// Register handlers and start server
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", handler.RootHandler)
 	mux.Handle("/predict-stock", predictHandler)
 
 	log.Printf("Starting server on port %s", cfg.Port)
-	log.Println("Available endpoints: POST /predict-stock")
+	log.Println("Available endpoints: GET /, POST /predict-stock")
 	if err := http.ListenAndServe(":"+cfg.Port, mux); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
