@@ -1,5 +1,7 @@
 FROM golang:alpine AS builder
 
+LABEL org.opencontainers.image.source https://github.com/Cleign1/backend-golang-skripsi
+
 WORKDIR /app
 
 # Copy go mod files
