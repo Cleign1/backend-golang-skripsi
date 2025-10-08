@@ -10,6 +10,12 @@ import (
 	jsoniter "github.com/json-iterator/go"
 )
 
+// RootHandler handles the root endpoint.
+func RootHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("the app is working"))
+}
+
 // PredictHandler handles the /predict-stock endpoint.
 type PredictHandler struct {
 	Json      jsoniter.API
