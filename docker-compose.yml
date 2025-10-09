@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    images: ghcr.io/cleign1/backend-golang-server-app:${IMAGE_TAG:-latest}
+    image: ghcr.io/cleign1/backend-golang-server-app:${IMAGE_TAG:-latest}
     ports:
       - "8080:8080"
     env_file: ".env"
