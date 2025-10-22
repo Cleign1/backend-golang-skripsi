@@ -256,7 +256,7 @@ func (p *Predictor) analyzeStock(ctx context.Context, req models.PredictionReque
 	offset := 0
 
 	for {
-		// log.Printf("[Predictor] Processing batch for Task ID %s, starting at offset %d...", req.TaskID, offset) // Reduce logging noise maybe
+		log.Printf("[Predictor] Processing batch for Task ID %s, starting at offset %d...", req.TaskID, offset)
 
 		products, err := p.fetchProductBatch(ctx, offset)
 		if err != nil {
