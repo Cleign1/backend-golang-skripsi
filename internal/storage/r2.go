@@ -12,15 +12,18 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
+// Re-export the MinIO client type for consumers without importing minio directly if desired.
+type MinioClient = minio.Client
+
 // R2Config holds the configuration required to connect to R2 (S3-compatible).
 type R2Config struct {
 	Endpoint       string // e.g. "ACCOUNT_ID.r2.cloudflarestorage.com" or "https://ACCOUNT_ID.r2.cloudflarestorage.com"
 	AccessKey      string
 	SecretKey      string
 	Bucket         string
-	UseSSL         bool // typically true with R2
-	UsePathStyle   bool // default true for best compatibility
-	PublicBaseURL  string
+	UseSSL         bool   // typically true with R2
+	UsePathStyle   bool   // default true for best compatibility
+	PublicBaseURL  string // optional: e.g., "https://cdn.example.com" for public objects
 	PresignExpires time.Duration
 }
 
@@ -84,7 +87,7 @@ func UploadFile(
 		if _, parseErr := url.Parse(joined); parseErr == nil {
 			return joined, nil
 		}
-		// Fallback: escape just the last segment
+		// Fallback: escape only last segment if necessary
 		return base + "/" + path.Dir(objectKey) + "/" + url.PathEscape(path.Base(objectKey)), nil
 	}
 
