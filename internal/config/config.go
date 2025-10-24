@@ -25,6 +25,7 @@ type Config struct {
 	R2Bucket          string
 	R2PublicBaseURL   string
 	R2UsePathStyle    bool
+	R2ObjectPrefix    string // e.g., "prediction" so objects go to skripsi/prediction/<file>
 }
 
 // Load loads the configuration from environment variables.
@@ -79,6 +80,8 @@ func Load() (*Config, error) {
 	r2SK := strings.TrimSpace(os.Getenv("R2_SECRET_ACCESS_KEY"))
 	r2Bucket := strings.TrimSpace(os.Getenv("R2_BUCKET"))
 	r2PublicBaseURL := strings.TrimSpace(os.Getenv("R2_PUBLIC_BASE_URL"))
+	r2ObjectPrefix := strings.Trim(strings.TrimSpace(os.Getenv("R2_OBJECT_PREFIX")), "/") // e.g., "prediction"
+
 	usePathStyle := true
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("R2_USE_PATH_STYLE"))); v != "" {
 		usePathStyle = v == "1" || v == "true" || v == "yes"
@@ -88,7 +91,11 @@ func Load() (*Config, error) {
 	if r2Endpoint == "" || r2AK == "" || r2SK == "" || r2Bucket == "" {
 		log.Println("WARNING: R2 storage is not fully configured. File uploads will be disabled.")
 	} else {
-		log.Printf("INFO: R2 storage configured for bucket '%s' at endpoint '%s'.", r2Bucket, r2Endpoint)
+		if r2ObjectPrefix != "" {
+			log.Printf("INFO: R2 storage configured for bucket '%s' with prefix '%s' at endpoint '%s'.", r2Bucket, r2ObjectPrefix, r2Endpoint)
+		} else {
+			log.Printf("INFO: R2 storage configured for bucket '%s' at endpoint '%s'.", r2Bucket, r2Endpoint)
+		}
 	}
 
 	return &Config{
@@ -96,8 +103,8 @@ func Load() (*Config, error) {
 		BatchSize:               batchSize,
 		CallbackURL:             callbackURL,
 		Port:                    port,
-		FlaskWebhookURL:         flaskWebhookURL,         // Keep for n8n
-		N8nPredictionTriggerURL: n8nPredictionTriggerURL, // New URL to trigger n8n
+		FlaskWebhookURL:         flaskWebhookURL,
+		N8nPredictionTriggerURL: n8nPredictionTriggerURL,
 
 		R2Endpoint:        r2Endpoint,
 		R2AccessKeyID:     r2AK,
@@ -105,5 +112,6 @@ func Load() (*Config, error) {
 		R2Bucket:          r2Bucket,
 		R2PublicBaseURL:   r2PublicBaseURL,
 		R2UsePathStyle:    usePathStyle,
+		R2ObjectPrefix:    r2ObjectPrefix,
 	}, nil
 }
