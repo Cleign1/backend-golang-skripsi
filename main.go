@@ -16,7 +16,6 @@ import (
 	"backend-golang-skripsi/internal/storage"
 
 	jsoniter "github.com/json-iterator/go"
-	"github.com/minio/minio-go/v7"
 )
 
 func main() {
@@ -45,8 +44,11 @@ func main() {
 	log.Println("INFO: Database connection established.")
 
 	// --- Cloudflare R2 (S3-compatible) Initialization ---
-	var r2Client *minio.Client
-	if cfg.R2Endpoint != "" && cfg.R2AccessKeyID != "" && cfg.R2SecretAccessKey != "" && cfg.R2Bucket != "" {
+	var r2Client = func() *storage.MinioClient {
+		if cfg.R2Endpoint == "" || cfg.R2AccessKeyID == "" || cfg.R2SecretAccessKey == "" || cfg.R2Bucket == "" {
+			log.Println("WARNING: R2 storage not fully configured. File uploads will be disabled.")
+			return nil
+		}
 		client, err := storage.NewR2Client(storage.R2Config{
 			Endpoint:       cfg.R2Endpoint,
 			AccessKey:      cfg.R2AccessKeyID,
@@ -59,13 +61,11 @@ func main() {
 		})
 		if err != nil {
 			log.Printf("WARNING: Failed to create R2 client: %v. Cloud storage uploads will be disabled.", err)
-		} else {
-			r2Client = client
-			log.Println("INFO: Cloudflare R2 client initialized.")
+			return nil
 		}
-	} else {
-		log.Println("WARNING: R2 storage not configured. File uploads will be disabled.")
-	}
+		log.Println("INFO: Cloudflare R2 client initialized.")
+		return client
+	}()
 
 	// --- Predictor Initialization ---
 	// Create the predictor instance, passing dependencies including the config
@@ -73,10 +73,11 @@ func main() {
 		DB:              dbpool,
 		Json:            jsoniter.ConfigCompatibleWithStandardLibrary, // Use efficient JSON library
 		BatchSize:       cfg.BatchSize,
-		R2Client:        r2Client,     // May be nil if initialization failed
-		R2Bucket:        cfg.R2Bucket, // Will be empty if not set
+		R2Client:        r2Client,
+		R2Bucket:        cfg.R2Bucket,
 		R2PublicBaseURL: cfg.R2PublicBaseURL,
-		Cfg:             cfg, // Pass the full config reference
+		R2ObjectPrefix:  cfg.R2ObjectPrefix, // e.g., "prediction"
+		Cfg:             cfg,                // Pass the full config reference
 	}
 	log.Println("INFO: Predictor initialized.")
 
