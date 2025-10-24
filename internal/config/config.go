@@ -4,20 +4,27 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
 
 // Config holds all the configuration for our application.
 type Config struct {
-	DatabaseURL           string
-	BatchSize             int
-	CallbackURL           string // URL for Go -> Flask final result (Optional)
-	Port                  string
-	GoogleDriveFolderID   string
-	GoogleCredentialsPath string
-	FlaskWebhookURL       string // URL for n8n -> Flask status updates
-	N8nPredictionTriggerURL string // New: URL to trigger n8n prediction workflow
+	DatabaseURL             string
+	BatchSize               int
+	CallbackURL             string // URL for Go -> Flask final result (Optional)
+	Port                    string
+	FlaskWebhookURL         string // URL for n8n -> Flask status updates
+	N8nPredictionTriggerURL string // URL to trigger n8n prediction workflow
+
+	// Cloudflare R2 / S3-compatible storage
+	R2Endpoint        string
+	R2AccessKeyID     string
+	R2SecretAccessKey string
+	R2Bucket          string
+	R2PublicBaseURL   string
+	R2UsePathStyle    bool
 }
 
 // Load loads the configuration from environment variables.
@@ -49,7 +56,6 @@ func Load() (*Config, error) {
 		log.Println("INFO: CALLBACK_URL not set. Go backend will not send a final result directly to Flask.")
 	}
 
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080" // Default port
@@ -67,18 +73,37 @@ func Load() (*Config, error) {
 		log.Fatal("FATAL: N8N_PREDICTION_TRIGGER_URL environment variable is not set.")
 	}
 
-	googleDriveFolderID := os.Getenv("GOOGLE_DRIVE_FOLDER_ID")
-	googleCredentialsPath := os.Getenv("GOOGLE_CREDENTIALS_PATH")
+	// R2 / S3-compatible storage configuration
+	r2Endpoint := strings.TrimSpace(os.Getenv("R2_ENDPOINT"))
+	r2AK := strings.TrimSpace(os.Getenv("R2_ACCESS_KEY_ID"))
+	r2SK := strings.TrimSpace(os.Getenv("R2_SECRET_ACCESS_KEY"))
+	r2Bucket := strings.TrimSpace(os.Getenv("R2_BUCKET"))
+	r2PublicBaseURL := strings.TrimSpace(os.Getenv("R2_PUBLIC_BASE_URL"))
+	usePathStyle := true
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("R2_USE_PATH_STYLE"))); v != "" {
+		usePathStyle = v == "1" || v == "true" || v == "yes"
+	}
 
+	// Not fatal: allow app to run without uploads if R2 not configured
+	if r2Endpoint == "" || r2AK == "" || r2SK == "" || r2Bucket == "" {
+		log.Println("WARNING: R2 storage is not fully configured. File uploads will be disabled.")
+	} else {
+		log.Printf("INFO: R2 storage configured for bucket '%s' at endpoint '%s'.", r2Bucket, r2Endpoint)
+	}
 
 	return &Config{
-		DatabaseURL:           dbURL,
-		BatchSize:             batchSize,
-		CallbackURL:           callbackURL,
-		Port:                  port,
-		GoogleDriveFolderID:   googleDriveFolderID,
-		GoogleCredentialsPath: googleCredentialsPath,
-		FlaskWebhookURL:       flaskWebhookURL,       // Keep for n8n
+		DatabaseURL:             dbURL,
+		BatchSize:               batchSize,
+		CallbackURL:             callbackURL,
+		Port:                    port,
+		FlaskWebhookURL:         flaskWebhookURL,         // Keep for n8n
 		N8nPredictionTriggerURL: n8nPredictionTriggerURL, // New URL to trigger n8n
+
+		R2Endpoint:        r2Endpoint,
+		R2AccessKeyID:     r2AK,
+		R2SecretAccessKey: r2SK,
+		R2Bucket:          r2Bucket,
+		R2PublicBaseURL:   r2PublicBaseURL,
+		R2UsePathStyle:    usePathStyle,
 	}, nil
 }
