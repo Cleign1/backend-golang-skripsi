@@ -12,23 +12,24 @@ import (
 	"strconv"
 	"time"
 
-	"backend-golang-skripsi/internal/config" // Import config
-	"backend-golang-skripsi/internal/gdrive"
+	"backend-golang-skripsi/internal/config"
 	"backend-golang-skripsi/internal/models"
+	"backend-golang-skripsi/internal/storage"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	jsoniter "github.com/json-iterator/go"
-	"google.golang.org/api/drive/v3"
+	"github.com/minio/minio-go/v7"
 )
 
 // Predictor holds all the dependencies for the prediction task.
 type Predictor struct {
-	DB            *pgxpool.Pool
-	Json          jsoniter.API
-	BatchSize     int
-	DriveService  *drive.Service
-	DriveFolderID string
-	Cfg           *config.Config // Reference to the application configuration
+	DB              *pgxpool.Pool
+	Json            jsoniter.API
+	BatchSize       int
+	R2Client        *minio.Client
+	R2Bucket        string
+	R2PublicBaseURL string
+	Cfg             *config.Config // Reference to the application configuration
 }
 
 // triggerN8nPredictionWorkflow sends a request to start the n8n prediction workflow.
@@ -43,7 +44,6 @@ func (p *Predictor) triggerN8nPredictionWorkflow(ctx context.Context, taskID, pr
 	jsonData, err := p.Json.Marshal(payload)
 	if err != nil {
 		log.Printf("[Predictor][n8nTrigger] ERROR Task ID %s: Failed to marshal n8n trigger payload: %v", taskID, err)
-		// Don't return error here, log and maybe proceed, or handle upstream
 		return fmt.Errorf("failed to marshal n8n trigger payload: %w", err)
 	}
 
@@ -59,24 +59,21 @@ func (p *Predictor) triggerN8nPredictionWorkflow(ctx context.Context, taskID, pr
 	if err != nil {
 		// Log as error because triggering is critical for the timeline display
 		log.Printf("[Predictor][n8nTrigger] ERROR Task ID %s: Failed to trigger n8n workflow at %s: %v", taskID, p.Cfg.N8nPredictionTriggerURL, err)
-		return fmt.Errorf("failed to trigger n8n workflow: %w", err) // Return error to stop RunTask
+		return fmt.Errorf("failed to trigger n8n workflow: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Log based on n8n's response status
 	if resp.StatusCode >= 300 {
-		// Log as warning or error, depending on how critical n8n's confirmation is
 		log.Printf("[Predictor][n8nTrigger] WARNING Task ID %s: n8n trigger returned non-OK status: %s", taskID, resp.Status)
-		// Optionally return an error if a 2xx response is mandatory
-		// return fmt.Errorf("n8n trigger failed with status: %s", resp.Status)
 	} else {
 		log.Printf("[Predictor][n8nTrigger] Successfully triggered n8n prediction workflow for Task ID %s.", taskID)
 	}
 
-	return nil // Trigger request sent successfully (even if n8n returned non-2xx)
+	return nil
 }
 
-// RunTask contains the core logic for the prediction analysis. It now triggers n8n first.
+// RunTask contains the core logic for the prediction analysis. It triggers n8n first.
 func (p *Predictor) RunTask(ctx context.Context, req models.PredictionRequest) {
 	log.Printf("[Predictor] Starting background task. Task ID: %s, Prediction Date: %s", req.TaskID, req.PredictionDate)
 	startTime := time.Now()
@@ -97,8 +94,6 @@ func (p *Predictor) RunTask(ctx context.Context, req models.PredictionRequest) {
 	// --- n8n Trigger Sent ---
 
 	// --- Continue with Go Backend Processing ---
-	// (Analysis, CSV generation, Drive upload - without sending intermediate updates)
-
 	insufficientStockProducts, err := p.analyzeStock(ctx, req)
 	if err != nil {
 		errMsg := fmt.Sprintf("Gagal menganalisis stok: %v", err)
@@ -107,7 +102,6 @@ func (p *Predictor) RunTask(ctx context.Context, req models.PredictionRequest) {
 		if p.Cfg.CallbackURL != "" {
 			_ = p.sendFinalCallback(ctx, req.TaskID, "", "", nil, fmt.Errorf(errMsg))
 		}
-		// n8n should ideally also report failure based on its own steps or timeout
 		return
 	}
 
@@ -126,37 +120,38 @@ func (p *Predictor) RunTask(ctx context.Context, req models.PredictionRequest) {
 	}
 	log.Printf("[Predictor] Results for Task ID %s saved locally to %s", req.TaskID, filePath)
 
-	// --- Google Drive Upload ---
-	var driveURL string
+	// --- Cloudflare R2 Upload ---
+	var fileURL string
 	var uploadErr error // To capture upload specific error
-	if p.DriveService != nil && p.DriveFolderID != "" {
-		log.Printf("[Predictor] Task ID %s: Attempting Google Drive upload...", req.TaskID)
-		fileID, err := gdrive.UploadFile(ctx, p.DriveService, filePath, filepath.Base(filePath), p.DriveFolderID)
+	if p.R2Client != nil && p.R2Bucket != "" {
+		log.Printf("[Predictor] Task ID %s: Attempting Cloudflare R2 upload...", req.TaskID)
+		objectKey := fmt.Sprintf("reports/%s.csv", req.TaskID)
+		url, err := storage.UploadFile(ctx, p.R2Client, p.R2Bucket, filePath, objectKey, "text/csv", p.R2PublicBaseURL, 7*24*time.Hour)
 		if err != nil {
-			uploadErr = fmt.Errorf("failed to upload results to Google Drive: %w", err)
+			uploadErr = fmt.Errorf("failed to upload results to Cloudflare R2: %w", err)
 			log.Printf("[Predictor] WARNING for Task ID %s: %v", req.TaskID, uploadErr)
 			// Don't return yet, send final callback indicating upload failure if possible
 		} else {
-			driveURL = fmt.Sprintf("https://drive.google.com/file/d/%s/view", fileID)
-			log.Printf("[Predictor] Results for Task ID %s uploaded to Google Drive: %s", req.TaskID, driveURL)
+			fileURL = url
+			log.Printf("[Predictor] Results for Task ID %s uploaded to Cloudflare R2: %s", req.TaskID, fileURL)
 		}
 	} else {
-		log.Printf("[Predictor] WARNING for Task ID %s: Google Drive upload skipped - service or folder ID not configured", req.TaskID)
+		log.Printf("[Predictor] WARNING for Task ID %s: Cloudflare R2 upload skipped - client or bucket not configured", req.TaskID)
 	}
-	// --- End Google Drive Upload ---
+	// --- End Cloudflare R2 Upload ---
 
 	// --- Send Final Callback Directly to Flask (Optional) ---
 	if p.Cfg.CallbackURL != "" {
 		// Use uploadErr if it occurred, otherwise the main process error (which is nil here if we reached this point)
 		finalProcessErr := uploadErr // If uploadErr is nil, this is nil
-		if err := p.sendFinalCallback(ctx, req.TaskID, filePath, driveURL, insufficientStockProducts, finalProcessErr); err != nil {
+		if err := p.sendFinalCallback(ctx, req.TaskID, filePath, fileURL, insufficientStockProducts, finalProcessErr); err != nil {
 			// Log error if sending the final callback fails
 			log.Printf("[Predictor] ERROR for Task ID %s sending final callback: %v", req.TaskID, err)
 		}
 	} else {
 		// Log completion even if callback is disabled
 		if uploadErr != nil {
-			log.Printf("[Predictor] Task ID %s finished processing with Google Drive upload error.", req.TaskID)
+			log.Printf("[Predictor] Task ID %s finished processing with Cloudflare R2 upload error.", req.TaskID)
 		} else {
 			log.Printf("[Predictor] Task ID %s finished processing successfully (final callback disabled).", req.TaskID)
 		}
@@ -165,7 +160,7 @@ func (p *Predictor) RunTask(ctx context.Context, req models.PredictionRequest) {
 }
 
 // sendFinalCallback sends the final result/status directly to Flask if CallbackURL is configured.
-func (p *Predictor) sendFinalCallback(ctx context.Context, taskID, localFilePath, driveURL string, results []models.PredictionResult, processErr error) error {
+func (p *Predictor) sendFinalCallback(ctx context.Context, taskID, localFilePath, fileURL string, results []models.PredictionResult, processErr error) error {
 	// Only proceed if CallbackURL is actually set in the config
 	if p.Cfg.CallbackURL == "" {
 		log.Printf("[Predictor][FinalCallback] Task ID %s: CallbackURL not configured. Skipping final direct callback.", taskID)
@@ -186,20 +181,20 @@ func (p *Predictor) sendFinalCallback(ctx context.Context, taskID, localFilePath
 		finalMessage = fmt.Sprintf("Prediksi Gagal: %v", processErr)
 	}
 
-	// Refine message based on Drive upload status
-	if driveURL != "" && processErr == nil {
-		finalMessage = "Prediksi Selesai. Laporan dihasilkan dan diunggah ke Google Drive."
-	} else if driveURL == "" && processErr != nil && p.DriveService != nil && p.DriveFolderID != "" {
-		// Error occurred, likely during upload if drive was configured
-		finalMessage = fmt.Sprintf("Prediksi Gagal: %v", processErr) // Error message already includes upload failure info
-	} else if driveURL == "" && processErr == nil && (p.DriveService == nil || p.DriveFolderID == "") {
-		// No error, but Drive was skipped due to config
-		finalMessage = "Prediksi Selesai. Laporan dihasilkan (Upload GDrive dilewati)."
-	} else if driveURL == "" && processErr == nil && p.DriveService != nil && p.DriveFolderID != "" {
-		// THIS CASE indicates an unexpected issue - upload configured but failed silently?
-		log.Printf("[Predictor][FinalCallback] WARNING Task ID %s: Drive upload configured but no URL and no error reported. Marking as failure.", taskID)
+	// Refine message based on cloud upload status
+	if fileURL != "" && processErr == nil {
+		finalMessage = "Prediksi Selesai. Laporan dihasilkan dan diunggah ke Cloudflare R2."
+	} else if fileURL == "" && processErr != nil && p.R2Client != nil && p.R2Bucket != "" {
+		// Error occurred, likely during upload if R2 was configured
+		finalMessage = fmt.Sprintf("Prediksi Gagal: %v", processErr)
+	} else if fileURL == "" && processErr == nil && (p.R2Client == nil || p.R2Bucket == "") {
+		// No error, but R2 was skipped due to config
+		finalMessage = "Prediksi Selesai. Laporan dihasilkan (Upload Cloudflare R2 dilewati)."
+	} else if fileURL == "" && processErr == nil && p.R2Client != nil && p.R2Bucket != "" {
+		// Unexpected issue - upload configured but failed silently?
+		log.Printf("[Predictor][FinalCallback] WARNING Task ID %s: R2 upload configured but no URL and no error reported. Marking as failure.", taskID)
 		finalFlaskStatus = "FAILURE"
-		finalMessage = "Prediksi Selesai. Laporan dihasilkan (Namun gagal mengunggah ke Google Drive)."
+		finalMessage = "Prediksi Selesai. Laporan dihasilkan (Namun gagal mengunggah ke Cloudflare R2)."
 	}
 
 	// Construct the payload for the direct Flask callback
@@ -208,8 +203,8 @@ func (p *Predictor) sendFinalCallback(ctx context.Context, taskID, localFilePath
 		"status":                  finalFlaskStatus, // "SUCCESS" or "FAILURE"
 		"products_flagged":        len(results),
 		"file_location":           localFilePath, // Local path for reference, might be removed if not needed by Flask
-		"drive_url":               driveURL,
-		"insufficient_stock_list": results, // Include detailed results if Flask needs them
+		"drive_url":               fileURL,       // Kept for backward-compatibility with Flask; now holds R2 URL
+		"insufficient_stock_list": results,       // Include detailed results if Flask needs them
 		"last_message":            finalMessage,
 	}
 
@@ -248,8 +243,7 @@ func (p *Predictor) sendFinalCallback(ctx context.Context, taskID, localFilePath
 	return nil // Callback HTTP request was made
 }
 
-// --- analyzeStock, fetchProductBatch, fetchSalesDataForProducts, saveResultsToCSV ---
-// These core logic functions remain unchanged. Ensure they are present below.
+// --- Core logic functions ---
 
 func (p *Predictor) analyzeStock(ctx context.Context, req models.PredictionRequest) ([]models.PredictionResult, error) {
 	insufficientStockProducts := []models.PredictionResult{}
@@ -289,7 +283,6 @@ func (p *Predictor) analyzeStock(ctx context.Context, req models.PredictionReque
 			sales, salesExist := salesData[productID]
 
 			var totalSales int = 0
-			// var daysWithSales int = 0 // <--- THIS LINE IS REMOVED
 			if salesExist {
 				// Calculate total sales for the available days (up to 3)
 				limit := len(sales)
@@ -299,15 +292,12 @@ func (p *Predictor) analyzeStock(ctx context.Context, req models.PredictionReque
 				for i := 0; i < limit; i++ {
 					totalSales += sales[i]
 				}
-				// daysWithSales = limit // <--- THIS LINE IS REMOVED
 			}
 
 			// Calculate average based on 3 days, even if fewer days had sales
 			avgSales := float64(totalSales) / 3.0
 			// Simple prediction: next 3 days demand = average * 3
-			// Use math.Ceil to round up demand, ensuring buffer
-			// predictedDemand := int(math.Ceil(avgSales * 3))
-			predictedDemand := int(avgSales * 3) // Stick to simple integer conversion for now
+			predictedDemand := int(avgSales * 3)
 
 			// Determine if stock is sufficient (stock >= predicted demand)
 			isSufficient := product.CurrentStock >= predictedDemand
@@ -351,8 +341,6 @@ func (p *Predictor) fetchProductBatch(ctx context.Context, offset int) ([]models
 			// Log the specific error but continue if possible, or return error immediately
 			log.Printf("Warning: Failed to scan product row at offset %d: %v. Skipping row.", offset, err)
 			continue // Skip this row and try the next one
-			// Alternatively, to stop on first error:
-			// return nil, fmt.Errorf("failed to scan product row (offset %d): %w", offset, err)
 		}
 		// Append successfully scanned product to the slice
 		products = append(products, prod)
@@ -421,15 +409,6 @@ func (p *Predictor) fetchSalesDataForProducts(ctx context.Context, productIDs []
 		return nil, fmt.Errorf("error iterating over sales rows: %w", err)
 	}
 
-	// Optional: Reverse the slices so they are in chronological order if needed elsewhere
-	// (Not strictly necessary for the current averaging logic)
-	// for id := range salesByProduct {
-	// 	s := salesByProduct[id]
-	// 	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
-	// 		s[i], s[j] = s[j], s[i]
-	// 	}
-	// }
-
 	// Return the map containing sales data for each product
 	return salesByProduct, nil
 }
@@ -475,7 +454,7 @@ func (p *Predictor) saveResultsToCSV(taskID string, results []models.PredictionR
 		// Convert numerical and boolean fields to strings
 		record := []string{
 			strconv.Itoa(result.ProductID),
-			result.ProductName, // Assuming product name doesn't contain commas or quotes needing special handling
+			result.ProductName,
 			strconv.Itoa(result.CurrentStock),
 			fmt.Sprintf("%.2f", result.AvgDailySales3Days), // Format float to 2 decimal places
 			strconv.Itoa(result.PredictedDemand3Day),
@@ -485,8 +464,6 @@ func (p *Predictor) saveResultsToCSV(taskID string, results []models.PredictionR
 		if err := writer.Write(record); err != nil {
 			// Log error for the specific row but attempt to continue writing others
 			log.Printf("Warning: Could not write CSV record for Product ID %d to '%s': %v", result.ProductID, filePath, err)
-			// Optionally, uncomment the line below to stop and return error on the first failure:
-			// return "", fmt.Errorf("could not write CSV record for Product ID %d: %w", result.ProductID, err)
 		}
 	}
 
