@@ -11,11 +11,12 @@ import (
 
 	"backend-golang-skripsi/internal/config"
 	"backend-golang-skripsi/internal/database"
-	"backend-golang-skripsi/internal/gdrive"
 	"backend-golang-skripsi/internal/handler"
 	"backend-golang-skripsi/internal/predictor"
+	"backend-golang-skripsi/internal/storage"
 
 	jsoniter "github.com/json-iterator/go"
+	"github.com/minio/minio-go/v7"
 )
 
 func main() {
@@ -43,33 +44,39 @@ func main() {
 	}()
 	log.Println("INFO: Database connection established.")
 
-	// --- Google Drive Service Initialization ---
-	driveService, err := gdrive.NewService(baseCtx, cfg.GoogleCredentialsPath)
-	if err != nil {
-		// Log as warning, allows app to run without Drive features
-		log.Printf("WARNING: Failed to create Google Drive service: %v. Google Drive features will be disabled.", err)
-	} else if driveService != nil {
-		// Test connection only if service was initialized successfully
-		if err := gdrive.TestConnection(baseCtx, driveService, cfg.GoogleDriveFolderID); err != nil {
-			// Log as warning, allows app to run but Drive uploads might fail
-			log.Printf("WARNING: Google Drive connection test failed: %v. File uploads may not work.", err)
-			// Optionally set driveService to nil if test must pass:
-			// driveService = nil
-			// log.Println("INFO: Google Drive service disabled due to connection test failure.")
+	// --- Cloudflare R2 (S3-compatible) Initialization ---
+	var r2Client *minio.Client
+	if cfg.R2Endpoint != "" && cfg.R2AccessKeyID != "" && cfg.R2SecretAccessKey != "" && cfg.R2Bucket != "" {
+		client, err := storage.NewR2Client(storage.R2Config{
+			Endpoint:       cfg.R2Endpoint,
+			AccessKey:      cfg.R2AccessKeyID,
+			SecretKey:      cfg.R2SecretAccessKey,
+			Bucket:         cfg.R2Bucket,
+			UseSSL:         true,
+			UsePathStyle:   cfg.R2UsePathStyle,
+			PublicBaseURL:  cfg.R2PublicBaseURL,
+			PresignExpires: 7 * 24 * time.Hour,
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to create R2 client: %v. Cloud storage uploads will be disabled.", err)
 		} else {
-			log.Println("INFO: Google Drive service initialized and connection tested successfully.")
+			r2Client = client
+			log.Println("INFO: Cloudflare R2 client initialized.")
 		}
+	} else {
+		log.Println("WARNING: R2 storage not configured. File uploads will be disabled.")
 	}
 
 	// --- Predictor Initialization ---
 	// Create the predictor instance, passing dependencies including the config
 	p := &predictor.Predictor{
-		DB:            dbpool,
-		Json:          jsoniter.ConfigCompatibleWithStandardLibrary, // Use efficient JSON library
-		BatchSize:     cfg.BatchSize,
-		DriveService:  driveService,            // May be nil if initialization/test failed
-		DriveFolderID: cfg.GoogleDriveFolderID, // Will be empty if not set
-		Cfg:           cfg,                     // Pass the full config reference
+		DB:              dbpool,
+		Json:            jsoniter.ConfigCompatibleWithStandardLibrary, // Use efficient JSON library
+		BatchSize:       cfg.BatchSize,
+		R2Client:        r2Client,     // May be nil if initialization failed
+		R2Bucket:        cfg.R2Bucket, // Will be empty if not set
+		R2PublicBaseURL: cfg.R2PublicBaseURL,
+		Cfg:             cfg, // Pass the full config reference
 	}
 	log.Println("INFO: Predictor initialized.")
 
