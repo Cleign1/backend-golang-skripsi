@@ -253,9 +253,9 @@ func (p *Predictor) analyzeStock(ctx context.Context, req models.PredictionReque
 		productMap := make(map[int]models.Product)
 		productIDs := make([]int, 0, len(products))
 		for _, prod := range products {
-			if _, exists := productMap[prod.Index]; !exists {
-				productMap[prod.Index] = prod
-				productIDs = append(productIDs, prod.Index)
+			if _, exists := productMap[prod.ProductID]; !exists {
+				productMap[prod.ProductID] = prod
+				productIDs = append(productIDs, prod.ProductID)
 			}
 		}
 
@@ -290,7 +290,7 @@ func (p *Predictor) analyzeStock(ctx context.Context, req models.PredictionReque
 
 			if !isSufficient {
 				insufficientStockProducts = append(insufficientStockProducts, models.PredictionResult{
-					ProductID:           product.Index,
+					ProductID:           product.ProductID,
 					ProductName:         product.Name,
 					CurrentStock:        product.CurrentStock,
 					AvgDailySales3Days:  avgSales,
@@ -307,7 +307,7 @@ func (p *Predictor) analyzeStock(ctx context.Context, req models.PredictionReque
 }
 
 func (p *Predictor) fetchProductBatch(ctx context.Context, offset int) ([]models.Product, error) {
-	query := `SELECT "index", "name", "stock" FROM public.amazon_dataset ORDER BY "index" LIMIT $1 OFFSET $2;`
+	query := `SELECT "product_ID", "name", "stock" FROM public.amazon_dataset ORDER BY "product_ID" LIMIT $1 OFFSET $2;`
 	rows, err := p.DB.Query(ctx, query, p.BatchSize, offset)
 	if err != nil {
 		return nil, fmt.Errorf("database query failed for product batch (offset %d): %w", offset, err)
@@ -317,15 +317,11 @@ func (p *Predictor) fetchProductBatch(ctx context.Context, offset int) ([]models
 	var products []models.Product
 	for rows.Next() {
 		var prod models.Product
-		if err := rows.Scan(&prod.Index, &prod.Name, &prod.CurrentStock); err != nil {
+		if err := rows.Scan(&prod.ProductID, &prod.Name, &prod.CurrentStock); err != nil {
 			log.Printf("Warning: Failed to scan product row at offset %d: %v. Skipping row.", offset, err)
 			continue
 		}
 		products = append(products, prod)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating over product rows (offset %d): %w", offset, err)
 	}
 
 	return products, nil
@@ -339,12 +335,12 @@ func (p *Predictor) fetchSalesDataForProducts(ctx context.Context, productIDs []
 	startDate := predDate.AddDate(0, 0, -3).Format("2006-01-02")
 
 	query := `
-        SELECT "index", "quantity_sold"
+        SELECT "product_ID", "quantity_sold"
         FROM public.daily_sales
-        WHERE "index" = ANY($1)
+        WHERE "product_ID" = ANY($1)
           AND "date" >= $2::date
           AND "date" < $3::date
-		ORDER BY "index", "date" DESC;
+		ORDER BY "product_ID", "date" DESC;
     `
 	rows, err := p.DB.Query(ctx, query, productIDs, startDate, predictionDate)
 	if err != nil {
