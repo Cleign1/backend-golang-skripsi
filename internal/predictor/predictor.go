@@ -307,7 +307,7 @@ func (p *Predictor) analyzeStock(ctx context.Context, req models.PredictionReque
 }
 
 func (p *Predictor) fetchProductBatch(ctx context.Context, offset int) ([]models.Product, error) {
-	query := `SELECT "product_ID", "name", "stock" FROM public.amazon_dataset ORDER BY "product_ID" LIMIT $1 OFFSET $2;`
+	query := `SELECT "product_id", "name", "stock" FROM public.amazon_dataset ORDER BY "product_id" LIMIT $1 OFFSET $2;`
 	rows, err := p.DB.Query(ctx, query, p.BatchSize, offset)
 	if err != nil {
 		return nil, fmt.Errorf("database query failed for product batch (offset %d): %w", offset, err)
@@ -335,12 +335,12 @@ func (p *Predictor) fetchSalesDataForProducts(ctx context.Context, productIDs []
 	startDate := predDate.AddDate(0, 0, -3).Format("2006-01-02")
 
 	query := `
-        SELECT "product_ID", "quantity_sold"
+        SELECT "product_id", "quantity_sold"
         FROM public.daily_sales
-        WHERE "product_ID" = ANY($1)
+        WHERE "product_id" = ANY($1)
           AND "date" >= $2::date
           AND "date" < $3::date
-		ORDER BY "product_ID", "date" DESC;
+		ORDER BY "product_id", "date" DESC;
     `
 	rows, err := p.DB.Query(ctx, query, productIDs, startDate, predictionDate)
 	if err != nil {
