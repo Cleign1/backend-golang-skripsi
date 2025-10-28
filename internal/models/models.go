@@ -8,9 +8,9 @@ type PredictionRequest struct {
 
 // Product holds information about a product's current stock level.
 type Product struct {
-	Index        int
-	Name         string
-	CurrentStock int
+	ProductID    int    `json:"product_id"`
+	Name         string `json:"name"`
+	CurrentStock int    `json:"stock"`
 }
 
 // PredictionResult holds the final analysis for a single product.
